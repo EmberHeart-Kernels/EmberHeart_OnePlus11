@@ -453,13 +453,10 @@ runs:
         # IPC mechanisms (required by many apps and daemons)
         # KDiskMark and Brave Browser will fail without these
         CONFIG_SYSVIPC=y
-        # CONFIG_SYSVIPC_SYSCTL is not set
-        # CONFIG_PROC_SYSCTL is not set
-        CONFIG_POSIX_MQUEUE=y
+        CONFIG_PROC_SYSCTL=y
         
         # Docker Support in Chroot
         CONFIG_CGROUPS=y
-        CONFIG_CGROUP_DEVICE=y
         CONFIG_MEMCG=y
 
     - name: Add Oneplus BBR
