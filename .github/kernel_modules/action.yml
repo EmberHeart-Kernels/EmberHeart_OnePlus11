@@ -305,7 +305,7 @@ runs:
         cd "$MSM"
 
         # Merge defconfig fragments from vendor/kalama_GKI.config
-        cat arch/arm64/configs/vendor/kalama_GKI.config >> ./arch/arm64/configs/gki_defconfig
+        cat arch/arm64/configs/vendor/pineapple_GKI.config >> ./arch/arm64/configs/gki_defconfig
 
         # Thin LTO
         echo "CONFIG_LTO_CLANG_THIN=y" >> ./arch/arm64/configs/gki_defconfig                                                                            
