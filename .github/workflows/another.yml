@@ -5,7 +5,7 @@ permissions:
   actions: write
 
 inputs:
-  op_config_json:OP13r
+  op_config_json:
     description: 'JSON string containing full device config'
     required: true
     type: string
