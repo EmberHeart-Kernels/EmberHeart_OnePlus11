@@ -56,10 +56,10 @@ on:
 jobs:
   build-and-release:
     runs-on: ubuntu-latest
-    timeout-minutes: 240  # 4 hour timeout for safety
+    timeout-minutes: 240
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      CONFIG_DIR: "OP13R"  # Direct config - no matrix needed for single device
+      CONFIG_DIR: "OP13R"
     steps:
       # ==================== SETUP PHASE ====================
       - name: ⬇️ Checkout Repository
@@ -68,68 +68,62 @@ jobs:
           fetch-depth: 1
 
       - name: 📝 Parse Device Config
-        id: config
         shell: bash
         run: |
           set -euo pipefail
           
-          # Direct config for OnePlus 13R - no JSON parsing needed
-          cat << 'EOF' > /tmp/config.env
-          OP_MODEL=OP13R
-          OP_SOC=sm8650
-          OP_BRANCH=oneplus/sm8650
-          OP_MANIFEST_OOS14=oneplus13_14.0.0_manifest.xml
-          OP_MANIFEST_OOS15=oneplus13_15.0.0_manifest.xml
-          OP_MANIFEST_FAST_BUILD_OOS15=fast_build_oos15.xml
-          EOF
+          # Read config from JSON file
+          CONFIG_FILE="${GITHUB_WORKSPACE}/configs/${CONFIG_DIR}.json"
+          if [[ ! -f "$CONFIG_FILE" ]]; then
+            echo "❌ Config file not found: $CONFIG_FILE"
+            exit 1
+          fi
           
-          source /tmp/config.env
+          echo "✅ Reading config from: $CONFIG_FILE"
+          cat "$CONFIG_FILE"
           
-          # Add to GitHub environment
-          echo "OP_MODEL=$OP_MODEL" >> $GITHUB_ENV
-          echo "OP_SOC=$OP_SOC" >> $GITHUB_ENV
-          echo "OP_BRANCH=$OP_BRANCH" >> $GITHUB_ENV
+          # Parse JSON and set environment variables
+          echo "OP_MODEL=$(jq -r '.model' "$CONFIG_FILE")" >> $GITHUB_ENV
+          echo "OP_SOC=$(jq -r '.soc' "$CONFIG_FILE")" >> $GITHUB_ENV
+          echo "OP_BRANCH=$(jq -r '.branch' "$CONFIG_FILE")" >> $GITHUB_ENV
           
           # Set manifest based on selection
-          MANIFEST_VAR="OP_MANIFEST_${{ inputs.manifest }}"
-          MANIFEST_VALUE=$(eval "echo \$$MANIFEST_VAR")
-          echo "OP_MANIFEST=$MANIFEST_VALUE" >> $GITHUB_ENV
+          MANIFEST_KEY="manifest_${{ inputs.manifest }}"
+          MANIFEST_VALUE=$(jq -r ".$MANIFEST_KEY // empty" "$CONFIG_FILE")
           
-          echo "✅ Device: $OP_MODEL ($OP_SOC)"
+          if [[ -z "$MANIFEST_VALUE" ]]; then
+            echo "❌ Manifest not found for: ${{ inputs.manifest }}"
+            exit 1
+          fi
+          
+          echo "OP_MANIFEST=$MANIFEST_VALUE" >> $GITHUB_ENV
+          echo "✅ Model: $OP_MODEL"
+          echo "✅ SoC: $OP_SOC"
           echo "✅ Manifest: ${{ inputs.manifest }} → $MANIFEST_VALUE"
-          echo "✅ Kernel Version: v${{ inputs.kernel_version }}"
-          echo "✅ KSU Branch: ${{ inputs.ksun_branch }}"
-          echo "✅ Optimization: ${{ inputs.optimize_level }}"
 
       - name: 📦 Install Dependencies
         shell: bash
         run: |
           set -euo pipefail
-          echo "::group::Installing build dependencies..."
+          echo "Installing build dependencies..."
           sudo apt-get -o Acquire::Retries=3 update -qq
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
             git curl ca-certificates build-essential clang lld flex bison \
             libelf-dev libssl-dev libncurses-dev zlib1g-dev liblz4-tool \
-            libxml2-utils rsync unzip dwarves file python3 ccache jq
+            libxml2-utils rsync unzip dwarves file python3 ccache jq wget
           sudo apt-get clean
-          echo "::endgroup::"
 
       - name: 🛠️ Setup Build Environment
         shell: bash
         run: |
           set -euo pipefail
-          
-          # Install repo tool
           REPO="/usr/local/bin/repo"
-          if [ ! -x "$REPO" ]; then
-            curl -s https://storage.googleapis.com/git-repo-downloads/repo -o "$REPO"
+          if [[ ! -x "$REPO" ]]; then
+            curl -s https://storage.googleapis.com/git-repo-downloads/repo  -o "$REPO"
             chmod +x "$REPO"
           fi
           echo "REPO=$REPO" >> $GITHUB_ENV
-          
-          # Create working directory
           mkdir -p "$CONFIG_DIR"
-          echo "Working directory: $CONFIG_DIR"
 
       - name: 🔄 Sync Kernel Source
         shell: bash
@@ -138,23 +132,17 @@ jobs:
           cd "$CONFIG_DIR"
           
           if [[ "$OP_MANIFEST" == https://* ]]; then
-            # Remote manifest
             mkdir -p .repo/manifests
             curl --fail --location --proto '=https' "$OP_MANIFEST" -o .repo/manifests/temp_manifest.xml
             "$REPO" init -u https://github.com/OnePlusOSS/kernel_manifest.git -b oneplus/sm8650 -m temp_manifest.xml --repo-rev=v2.16 --depth=1 --no-clone-bundle --no-tags
           else
-            # Local manifest name
             "$REPO" init -u https://github.com/OnePlusOSS/kernel_manifest.git -b "$OP_BRANCH" -m "$OP_MANIFEST" --repo-rev=v2.16 --depth=1 --no-clone-bundle --no-tags
           fi
           
-          # Sync with retries
           "$REPO" sync -c --no-clone-bundle --no-tags --optimized-fetch -j"$(nproc --all)" --fail-fast || {
-            echo "⚠️ First sync failed, retrying..."
+            echo "Retrying sync..."
             sleep 10
-            "$REPO" sync -c --no-clone-bundle --no-tags --optimized-fetch -j"$(nproc --all)" --fail-fast || {
-              echo "❌ Sync failed after retry"
-              exit 1
-            }
+            "$REPO" sync -c --no-clone-bundle --no-tags --optimized-fetch -j"$(nproc --all)" --fail-fast
           }
 
       - name: 🔍 Get Kernel Version Info
@@ -165,8 +153,6 @@ jobs:
           mkdir -p "$ARTIFACTS_DIR"
           
           cd "$CONFIG_DIR/kernel_platform/common"
-          
-          # Extract version info
           BRANCH_LINE=$(grep '^[[:space:]]*BRANCH=' build.config.common 2>/dev/null || grep '^[[:space:]]*BRANCH=' build.config.constants 2>/dev/null)
           [[ -z "$BRANCH_LINE" ]] && { echo "❌ No BRANCH found"; exit 1; }
           
@@ -183,9 +169,6 @@ jobs:
           echo "KERNEL_VER=$VERSION.$PATCHLEVEL" >> $GITHUB_ENV
           echo "KERNEL_FULL_VER=$ANDROID_VERSION-$VERSION.$PATCHLEVEL.$SUBLEVEL" >> $GITHUB_ENV
           echo "SUSFS_KERNEL_BRANCH=gki-$ANDROID_VERSION-$VERSION.$PATCHLEVEL" >> $GITHUB_ENV
-          
-          echo "✅ Android: $ANDROID_VERSION"
-          echo "✅ Kernel: $VERSION.$PATCHLEVEL.$SUBLEVEL"
 
       # ==================== KERNEL BUILD ====================
       - name: 💾 Setup ccache
@@ -201,24 +184,18 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          
           ANYKERNEL_BRANCH="gki-2.0"
-          if [[ -z "${{ inputs.susfs_branch_or_commit }}" ]]; then
-            SUSFS_BRANCH="${{ env.SUSFS_KERNEL_BRANCH }}"
-          else
-            SUSFS_BRANCH="${{ inputs.susfs_branch_or_commit }}"
-          fi
+          SUSFS_BRANCH="${{ inputs.susfs_branch_or_commit || env.SUSFS_KERNEL_BRANCH }}"
           
-          echo "Cloning dependencies..."
           git clone --depth=1 https://github.com/TheWildJames/AnyKernel3.git -b "$ANYKERNEL_BRANCH"
-          git clone --depth=1 https://github.com/TheWildJames/kernel_patches.git  
+          git clone --depth=1 https://github.com/TheWildJames/kernel_patches.git
           git clone --depth=1 https://github.com/terminal-beginner/kernel_patches.git my_patches
-          git clone https://gitlab.com/simonpunk/susfs4ksu.git  
+          git clone https://gitlab.com/simonpunk/susfs4ksu.git
           
           cd susfs4ksu
           if git rev-parse --verify "origin/$SUSFS_BRANCH" >/dev/null 2>&1 || git rev-parse --verify "$SUSFS_BRANCH" >/dev/null 2>&1; then
             git checkout "$SUSFS_BRANCH"
-            echo "✅ SUSFS: $SUSFS_BRANCH ($(git rev-parse --short HEAD))"
+            echo "✅ SUSFS: $SUSFS_BRANCH"
           else
             echo "❌ SUSFS branch '$SUSFS_BRANCH' not found"
             exit 1
@@ -252,7 +229,6 @@ jobs:
             curl --fail --location --proto '=https' -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s "${{ inputs.ksun_branch }}"
           fi
           git submodule update --init --recursive
-          echo "✅ KernelSU Next added"
 
       - name: 🔒 Apply SUSFS Patches
         shell: bash
@@ -267,9 +243,7 @@ jobs:
           cd ./KernelSU-Next
           susfs_version=$(grep '#define SUSFS_VERSION' ../common/include/linux/susfs.h | awk -F'"' '{print $2}')
           echo "SUSVER=$susfs_version" >> $GITHUB_ENV
-          echo "✅ SUSFS version: $susfs_version"
           
-          # Apply patches based on version
           case "$susfs_version" in
             "v1.5.9"|"v1.5.10"|"v1.5.11"|"v1.5.12")
               cp ../../../susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch ./
@@ -285,7 +259,6 @@ jobs:
               ;;
           esac
           
-          # Apply ptrace fix for old kernels
           cd ../common
           if [ "${{ env.ANDROID_VER }}" = "android15" ] && [ "${{ env.KERNEL_VER }}" = "6.6" ]; then
             if ! grep -qxF '#include <trace/hooks/fs.h>' ./fs/namespace.c; then
@@ -302,7 +275,7 @@ jobs:
           cd "$CONFIG_DIR/kernel_platform/common"
           patch -p1 < ../../../kernel_patches/next/scope_min_manual_hooks_v1.4.patch
 
-      - name: ⚙️ Configure Kernel Options
+      - name: ⚙️ Configure Kernel
         shell: bash
         run: |
           set -euo pipefail
@@ -345,7 +318,7 @@ jobs:
         run: |
           set -euo pipefail
           CUSTOM_LOCALVERSION="-${ANDROID_VER}-${{ inputs.kernel_uname }}"
-          echo "CUSTOM_LOCALVERSION=$CUSTOM_LOCALVERSION" >> "$GITHUB_ENV"
+          echo "CUSTOM_LOCALVERSION=$CUSTOM_LOCALVERSION" >> $GITHUB_ENV
 
       - name: 🔍 Detect Clang
         shell: bash
@@ -357,15 +330,14 @@ jobs:
             [ -d "$base/clang/host/linux-x86" ] || continue
             latest=$(ls -d "$base"/clang/host/linux-x86/clang-r*/ 2>/dev/null | sort -V | tail -n1 || true)
             if [ -n "$latest" ] && [ -x "$latest/bin/clang" ]; then
-              echo "CLANG_BIN_PATH=$latest/bin" >> "$GITHUB_ENV"
+              echo "CLANG_BIN_PATH=$latest/bin" >> $GITHUB_ENV
               echo "✅ Found clang: $(basename "$latest")"
               exit 0
             fi
           done
           
-          # Fallback to system clang
           if command -v clang >/dev/null 2>&1; then
-            echo "CLANG_BIN_PATH=$(dirname "$(command -v clang)")" >> "$GITHUB_ENV"
+            echo "CLANG_BIN_PATH=$(dirname "$(command -v clang)")" >> $GITHUB_ENV
             echo "✅ Using system clang"
             exit 0
           fi
@@ -373,7 +345,6 @@ jobs:
           echo "❌ No clang toolchain found"
           exit 1
 
-      # ==================== BUILD KERNEL ====================
       - name: 🔨 Build Kernel
         shell: bash
         env:
@@ -396,7 +367,6 @@ jobs:
           OUT=out
           mkdir -p "$OUT"
           
-          # Configure
           make O="$OUT" gki_defconfig
           
           if [ -n "${CUSTOM_LOCALVERSION:-}" ]; then
@@ -405,7 +375,6 @@ jobs:
             sed -i 's/scm_version="$(scm_version --short)"/scm_version=""/' scripts/setlocalversion
           fi
           
-          # Optimization
           if [ "${{ inputs.optimize_level }}" = "O3" ]; then
             scripts/config --file "$OUT/.config" -d CC_OPTIMIZE_FOR_PERFORMANCE
             scripts/config --file "$OUT/.config" -e CC_OPTIMIZE_FOR_PERFORMANCE_O3
@@ -420,19 +389,15 @@ jobs:
           KCPPFLAGS="-DCONFIG_OPTIMIZE_INLINING"
           
           make O="$OUT" olddefconfig
-          
-          # Build
           echo "🔥 Starting kernel build with $(nproc --all) threads..."
           make -j"$(nproc --all)" O="$OUT" KCFLAGS="$KCFLAGS" KCPPFLAGS="$KCPPFLAGS" 2>&1 | tee build.log
           
-          # Verify
           IMG="$OUT/arch/arm64/boot/Image"
           [[ -f "$IMG" ]] || { echo "❌ Kernel Image missing!"; exit 1; }
           sha256sum "$IMG" | tee "$OUT/Image.sha256"
           file "$IMG"
           
           echo "✅ Kernel build successful!"
-          echo "kernel_size=$(stat -c %s "$IMG")" >> $GITHUB_ENV
 
       - name: 📊 Collect Build Stats
         id: stats
@@ -444,16 +409,14 @@ jobs:
           ARTIFACTS_DIR="$GITHUB_WORKSPACE/artifacts"
           IMG="$OUT/arch/arm64/boot/Image"
           
-          # Warnings count
           WARNINGS=$(grep -i -E 'warning:' "$COMMON/build.log" | wc -l || true)
           echo "warnings=$WARNINGS" >> $GITHUB_OUTPUT
           echo "⚠️ Build warnings: $WARNINGS"
           
-          # Kernel version string
           KERNEL_UNAME=$(strings "$IMG" | grep -E 'Linux version.*#' | tail -n1 || echo "unknown")
           echo "KERNEL_UNAME=$KERNEL_UNAME" >> $GITHUB_ENV
+          echo "KERNEL_UNAME=${KERNEL_UNAME}" >> $ARTIFACTS_DIR/kernel_version.txt
           
-          # SHA256
           IMAGE_SHA256=$(sha256sum "$IMG" | cut -d' ' -f1)
           echo "image_sha256=$IMAGE_SHA256" >> $GITHUB_OUTPUT
           echo "✅ SHA256: $IMAGE_SHA256"
@@ -464,11 +427,8 @@ jobs:
           set -euo pipefail
           CONFIG_PATH="$GITHUB_WORKSPACE/$CONFIG_DIR/kernel_platform/common/out/.config"
           ARTIFACTS_DIR="$GITHUB_WORKSPACE/artifacts"
-          
           [[ -f "$CONFIG_PATH" ]] || { echo "⚠️ Config not found, skipping"; exit 0; }
-          
           cp "$CONFIG_PATH" "$ARTIFACTS_DIR/gki_defconfig_${{ env.KERNEL_FULL_VER }}"
-          echo "✅ Config saved"
 
       - name: 🗜️ Create Kernel ZIP
         shell: bash
@@ -476,16 +436,14 @@ jobs:
           set -euo pipefail
           IMAGE_PATH="$GITHUB_WORKSPACE/$CONFIG_DIR/kernel_platform/common/out/arch/arm64/boot/Image"
           ARTIFACTS_DIR="$GITHUB_WORKSPACE/artifacts"
-          
           [[ -f "$IMAGE_PATH" ]] || { echo "❌ Image not found!"; exit 1; }
           
           cp "$IMAGE_PATH" "$GITHUB_WORKSPACE/AnyKernel3/Image"
           cd "$GITHUB_WORKSPACE/AnyKernel3"
           sed -i '7 c\kernel.string=Bright-Star Kernel by terminal-beginner' anykernel.sh
           
-          ZIP_NAME="AnyKernel3_${OP_MODEL}_${{ env.KERNEL_FULL_VER }}_Next_$(date +%Y%m%d).zip"
+          ZIP_NAME="AnyKernel3_${OP_MODEL}_${{ env.KERNEL_FULL_VER }}_Next_$(date +%Y%m%d_%H%M%S).zip"
           zip -r "$ARTIFACTS_DIR/$ZIP_NAME" ./* >/dev/null
-          
           echo "✅ Kernel ZIP: $ZIP_NAME"
 
       - name: 🥾 Create Boot Image
@@ -496,10 +454,10 @@ jobs:
           cd "$GITHUB_WORKSPACE"
           
           mkdir -p boot
-          wget -q https://github.com/terminal-beginner/Bright-Star_OnePlus13R/raw/main/tools/boot.zip  
+          wget -q https://github.com/terminal-beginner/Bright-Star_OnePlus13R/raw/main/tools/boot.zip
           unzip -q boot.zip
           
-          wget -q https://github.com/magojohnji/magiskboot-linux/raw/main/x86_64/magiskboot  
+          wget -q https://github.com/magojohnji/magiskboot-linux/raw/main/x86_64/magiskboot
           chmod +x ./magiskboot
           
           BOOT=$(ls *.img 2>/dev/null | head -n1)
@@ -609,7 +567,7 @@ jobs:
           MSM="$KERNEL_PATH/msm-kernel"
           cd "$MSM/drivers/net/wireless/realtek/"
           rm -rf rtw88
-          git clone https://github.com/lwfinger/rtw88.git  
+          git clone https://github.com/lwfinger/rtw88.git
           sed -i 's/$(CONFIG_RTW88)/m/g' Makefile
           sed -i '/^source "drivers\/net\/wireless\/realtek\/rtw88\/Kconfig"$/s/.*/ /' Kconfig
 
@@ -627,7 +585,6 @@ jobs:
           
           cd "$MSM"
           
-          # Add vendor config
           if [ -f "arch/arm64/configs/vendor/pineapple_GKI.config" ]; then
             cat arch/arm64/configs/vendor/pineapple_GKI.config >> ./arch/arm64/configs/gki_defconfig
           fi
@@ -651,12 +608,10 @@ jobs:
           UNIFIED_MODULES="$GITHUB_WORKSPACE/all_modules"
           mkdir -p "$UNIFIED_MODULES"
           
-          # MSM modules (higher priority)
           if [ -d "$GITHUB_WORKSPACE/$CONFIG_DIR/msm_modules" ]; then
             find "$GITHUB_WORKSPACE/$CONFIG_DIR/msm_modules" -name "*.ko" -exec cp -f {} "$UNIFIED_MODULES/" \;
           fi
           
-          # Common modules
           cd "$CONFIG_DIR/kernel_platform/common"
           make O=out INSTALL_MOD_PATH="$GITHUB_WORKSPACE/$CONFIG_DIR/common_modules" modules_install
           
@@ -664,14 +619,12 @@ jobs:
             find "$GITHUB_WORKSPACE/$CONFIG_DIR/common_modules" -name "*.ko" -exec cp -n {} "$UNIFIED_MODULES/" \;
           fi
           
-          # Filter out default modules
           cd "$UNIFIED_MODULES"
-          curl -L -o default_modules.txt https://raw.githubusercontent.com/terminal-beginner/kernel_patches/refs/heads/main/default_modules.txt 
+          curl -L -o default_modules.txt https://raw.githubusercontent.com/terminal-beginner/kernel_patches/refs/heads/main/default_modules.txt
           while IFS= read -r module; do
             [[ -n "$module" ]] && rm -f "$module" 2>/dev/null || true
           done < default_modules.txt
           
-          # Create ZIP
           MODULE_COUNT=$(find . -name "*.ko" | wc -l)
           echo "📦 Packaging $MODULE_COUNT modules..."
           
@@ -689,7 +642,6 @@ jobs:
           path: ${{ github.workspace }}/artifacts/
           retention-days: 90
 
-  # ==================== RELEASE JOB ====================
   release:
     needs: build-and-release
     runs-on: ubuntu-latest
@@ -731,8 +683,6 @@ jobs:
           
           NEW_TAG="${BASE}-r${NEW_SUFFIX}"
           echo "NEW_TAG=$NEW_TAG" >> $GITHUB_ENV
-          echo "✅ New tag: $NEW_TAG"
-          
           git tag "$NEW_TAG"
           git push origin "$NEW_TAG"
 
