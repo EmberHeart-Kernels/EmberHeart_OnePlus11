@@ -1,0 +1,404 @@
+name: Build OnePlus 13R kernel modules
+
+permissions:
+  contents: write
+  actions: write
+
+inputs:
+  op_config_json:
+    description: 'JSON string containing full device config'
+    required: true
+    type: string
+  optimize_level:
+    required: false
+    type: string
+    default: O2  # Choices: O2 or O3
+  manifest:
+    required: true
+    type: string
+    default: OOS15
+
+runs:
+  using: composite
+  steps:
+    - name: Parse op_config_json
+      shell: bash
+      run: |
+        set -euo pipefail
+        echo '${{ inputs.op_config_json }}' > /tmp/config.json
+        jq -r 'to_entries[] | "OP_\(.key | ascii_upcase)=\(.value)"' /tmp/config.json >> "$GITHUB_ENV"
+        echo "Parsed config:"
+        jq '.' /tmp/config.json
+    
+    - name: Set Manifest
+      shell: bash
+      run: |
+        set -euo pipefail
+        echo "OP_MANIFEST=$OP_MANIFEST_${{ inputs.manifest }}_MODULES" >> "$GITHUB_ENV"
+    
+    - name: Validate Inputs
+      shell: bash
+      run: |
+        set -euo pipefail
+        echo "::group::Validate inputs"
+        model="$OP_MODEL"
+        soc="$OP_SOC"
+        branch="$OP_BRANCH"
+        manifest="$OP_MANIFEST"
+        optimize='${{ inputs.optimize_level }}'
+    
+        # Non-empty checks
+        [[ -n "$model" ]] || { echo "Input 'model' cannot be empty"; exit 1; }
+        [[ -n "$soc" ]] || { echo "Input 'soc' cannot be empty"; exit 1; }
+        [[ -n "$branch" ]] || { echo "Input 'branch' cannot be empty"; exit 1; }
+        [[ -n "$manifest" ]] || { echo "Input 'manifest' cannot be empty"; exit 1; }
+    
+        # Basic format checks
+        # soc: allow letters, digits, underscores, dashes (e.g., sm8650)
+        if ! [[ "$soc" =~ ^[A-Za-z0-9_-]+$ ]]; then
+          echo "Input 'soc' contains invalid characters. Allowed: letters, digits, underscore, dash"; exit 1
+        fi    
+        # branch: allow common ref patterns; spaces not allowed
+        if ! [[ "$branch" =~ ^[A-Za-z0-9._/-]+$ ]]; then
+          echo "Input 'branch' contains invalid characters. Allowed: letters, digits, ., _, -, /"; exit 1
+        fi    
+        # manifest: either HTTPS URL ending with .xml, or a filename ending with .xml (no spaces)
+        if [[ "$manifest" == http*://* ]]; then
+          if ! [[ "$manifest" =~ ^https:// ]]; then
+            echo "Manifest URL must be HTTPS"; exit 1
+          fi
+          if ! [[ "$manifest" =~ \.xml($|\?) ]]; then
+            echo "Manifest URL should point to an XML file (.xml)"; exit 1
+          fi
+        else
+          if ! [[ "$manifest" =~ \.xml$ ]]; then
+            echo "Manifest filename must end with .xml"; exit 1
+          fi
+          if [[ "$manifest" =~ [[:space:]] ]]; then
+            echo "Manifest filename cannot contain spaces"; exit 1
+          fi
+        fi
+        # Optimize level validation
+        case "$optimize" in
+          O2|O3) ;;
+          *) echo "optimize_level must be O2 or O3; got '$optimize'"; exit 1 ;;
+        esac
+        echo "Input validation OK."
+        echo "::endgroup::"
+
+
+    - name: Install Minimal Dependencies
+      shell: bash
+      run: |
+        set -euo pipefail
+        echo "::group::Install deps"
+        sudo apt-get -o Acquire::Retries=3 update -qq
+        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+          git curl ca-certificates build-essential clang lld flex bison \
+          libelf-dev libssl-dev libncurses-dev zlib1g-dev liblz4-tool \
+          libxml2-utils rsync unzip dwarves file python3 ccache
+        sudo apt-get clean
+        echo "::endgroup::"
+
+    - name: Setup Base Environment
+      shell: bash
+      run: |
+        set -euo pipefail
+        # Derive a unique build directory name
+        CONFIG="$OP_MODEL"
+        echo "CONFIG=$CONFIG" >> "$GITHUB_ENV"
+        # Install repo tool if missing
+        REPO="/usr/local/bin/repo"
+        if [ ! -x "$REPO" ]; then
+          curl -s https://storage.googleapis.com/git-repo-downloads/repo -o "$REPO"
+          chmod +x "$REPO"
+        fi
+        echo "REPO=$REPO" >> "$GITHUB_ENV"
+
+    - name: Initialize and Sync Kernel Source
+      shell: bash
+      run: |
+        set -euo pipefail
+        echo "Creating folder for configuration: $CONFIG"
+        mkdir -p "$CONFIG"
+        cd "$CONFIG"
+        echo "Initializing and syncing kernel source..."
+        if [[ "$OP_MANIFEST" == https://* ]]; then
+          mkdir -p .repo/manifests
+          curl --fail --show-error --location --proto '=https' "$OP_MANIFEST" -o .repo/manifests/temp_manifest.xml
+          "$REPO" init -u https://github.com/OnePlusOSS/kernel_manifest.git -b oneplus/sm8650 -m temp_manifest.xml --repo-rev=v2.16 --depth=1 --no-clone-bundle --no-tags
+        else
+          "$REPO" init -u https://github.com/OnePlusOSS/kernel_manifest.git -b "$OP_BRANCH" -m "$OP_MANIFEST" --repo-rev=v2.16 --depth=1 --no-clone-bundle --no-tags
+        fi
+        "$REPO" --version
+        success=false
+        for i in 1 2 3; do
+          if "$REPO" sync -c --no-clone-bundle --no-tags --optimized-fetch \
+             -j"$(nproc --all)" --fail-fast; then
+            success=true
+            break
+          fi
+          echo "repo sync attempt $i failed; retrying..."
+          sleep 30
+        done
+        $success || { echo "repo sync failed after 3 attempts"; exit 1; }
+        
+    - name: Get Kernel Version Info
+      shell: bash
+      run: |
+        set -euo pipefail
+        CONFIG_DIR="$GITHUB_WORKSPACE/$CONFIG"
+        ARTIFACTS_DIR="$CONFIG_DIR/artifacts"
+        mkdir -p "$ARTIFACTS_DIR"
+        cd "$CONFIG_DIR/kernel_platform/msm-kernel"
+        CONFIG_FILES=("build.config.common" "build.config.constants")
+        BRANCH_LINE=""
+        for f in "${CONFIG_FILES[@]}"; do
+          if [ -f "$f" ]; then
+            l=$(grep '^[[:space:]]*BRANCH=' "$f" || true)
+            if [ -n "$l" ]; then BRANCH_LINE="$l"; break; fi
+          fi
+        done
+        if [ -z "$BRANCH_LINE" ]; then
+          echo "Error: No BRANCH= found"; exit 1
+        fi
+        BRANCH_VALUE="${BRANCH_LINE#*=}"
+        ANDROID_VERSION="${BRANCH_VALUE%-*}"
+        if [ -z "$ANDROID_VERSION" ]; then
+          echo "Could not parse android version from BRANCH=$BRANCH_VALUE"
+          exit 1
+        fi
+        VERSION=$(grep '^VERSION *=' Makefile | awk '{print $3}')
+        PATCHLEVEL=$(grep '^PATCHLEVEL *=' Makefile | awk '{print $3}')
+        SUBLEVEL=$(grep '^SUBLEVEL *=' Makefile | awk '{print $3}')
+        FULL_VERSION="$VERSION.$PATCHLEVEL.$SUBLEVEL"
+        cd "$ARTIFACTS_DIR"
+        echo "$ANDROID_VERSION-$FULL_VERSION" > "${OP_MODEL}.txt"
+        echo "ANDROID_VER=$ANDROID_VERSION" >> "$GITHUB_ENV"
+        echo "KERNEL_VER=$VERSION.$PATCHLEVEL" >> "$GITHUB_ENV"
+        echo "KERNEL_FULL_VER=$ANDROID_VERSION-$FULL_VERSION" >> "$GITHUB_ENV"
+        echo "SUSFS_KERNEL_BRANCH=gki-$ANDROID_VERSION-$VERSION.$PATCHLEVEL" >> "$GITHUB_ENV"
+
+
+    - name: Setup ccache
+      uses: hendrikmuhs/ccache-action@v1.2.19
+      with:
+        key: ${{ env.CONFIG }}-modules-${{ env.KERNEL_FULL_VER }}
+        max-size: 5G
+        append-timestamp: false
+        create-symlink: true
+        job-summary: 'CCache stats'
+        evict-old-files: 'job'
+
+    - name: Clean Up ABI Protected Exports
+      shell: bash
+      run: |
+        set -euo pipefail
+        cd "$CONFIG/kernel_platform"
+        rm -f msm-kernel/android/abi_gki_protected_exports_* || true
+        df -h
+
+    - name: Add nethunter specfic drivers already present in kernel to be built as modules
+      shell: bash
+      run: |
+        set -euo pipefail
+        KERNEL_PATH="$GITHUB_WORKSPACE/$CONFIG/kernel_platform"
+        MSM="$KERNEL_PATH/msm-kernel"
+        cd "$MSM"
+        cat >> arch/arm64/configs/gki_defconfig <<EOF
+
+        CONFIG_WLAN_VENDOR_REALTEK=y
+
+        CONFIG_WLAN_VENDOR_ATH=y
+        CONFIG_ATH_COMMON=m
+        
+        CONFIG_ATH9K=m
+        CONFIG_ATH9K_HW=m
+        CONFIG_ATH9K_HTC=m
+        CONFIG_ATH9K_COMMON=m
+
+        CONFIG_ATH10K=m
+        CONFIG_ATH10K_USB=m
+
+        CONFIG_ATH11K=m
+
+        CONFIG_WLAN_VENDOR_MEDIATEK=y
+
+        CONFIG_MT7601U=m
+        CONFIG_MT76_CORE=m
+
+        CONFIG_MT76_CORE=m
+        CONFIG_MT76_USB=m
+        CONFIG_MT76x02_LIB=m
+        CONFIG_MT76x02_USB=m
+        CONFIG_MT76_CONNAC_LIB=m
+
+        CONFIG_MT7603E=m
+        CONFIG_MT76x2_COMMON=m
+        CONFIG_MT76x0_COMMON=m
+        CONFIG_MT7615_COMMON=m
+        CONFIG_MT7915E=m
+        CONFIG_MT7921E=m
+        
+        CONFIG_MAC80211_LEDS=m
+
+        CONFIG_CAN_SLCAN=m
+        EOF
+
+    - name: Add memkernel module
+      shell: bash
+      run: |
+        set -euo pipefail
+        KERNEL_PATH="$GITHUB_WORKSPACE/$CONFIG/kernel_platform"
+        MSM="$KERNEL_PATH/msm-kernel"
+        cd "$MSM"
+        curl -LSs "https://raw.githubusercontent.com/Poko-Apps/MemKernel/main/kernel/setup.sh" | bash -s M Bright-Star
+
+    - name: Add rtw88 modules
+      shell: bash
+      run: |
+        set -euo pipefail
+        KERNEL_PATH="$GITHUB_WORKSPACE/$CONFIG/kernel_platform"
+        MSM="$KERNEL_PATH/msm-kernel"
+        cd "$MSM/drivers/net/wireless/realtek/"
+        rm -rf rtw88
+        git clone https://github.com/lwfinger/rtw88.git
+        sed -i 's/$(CONFIG_RTW88)/m/g' Makefile
+        sed -i '/^source "drivers\/net\/wireless\/realtek\/rtw88\/Kconfig"$/s/.*/ /' Kconfig
+
+    - name: Detect Clang (toolchain for build)
+      shell: bash
+      run: |
+        set -euo pipefail
+        KP="$GITHUB_WORKSPACE/$CONFIG/kernel_platform"
+        CLANG_FOUND=false
+        for base in "$KP/prebuilts" "$KP/prebuilts-master"; do
+          [ -d "$base/clang/host/linux-x86" ] || continue
+          latest=$(ls -d "$base"/clang/host/linux-x86/clang-r*/ 2>/dev/null | sort -V | tail -n1 || true)
+          if [ -n "$latest" ] && [ -x "$latest/bin/clang" ]; then
+            CLANG_BIN="$latest/bin"
+            CLANG_FOUND=true
+          fi
+        done
+        if ! $CLANG_FOUND && command -v clang >/dev/null 2>&1; then
+          CLANG_BIN="$(dirname "$(command -v clang)")"
+          CLANG_FOUND=true
+          echo "Using system clang."
+        fi
+        $CLANG_FOUND || { echo "No clang toolchain found"; exit 1; }
+        echo "CLANG_BIN_PATH=$CLANG_BIN" >> "$GITHUB_ENV"
+        CLANG_VERSION="$("$CLANG_BIN/clang" --version | head -n1)"
+        echo "CLANG_VERSION=$CLANG_VERSION" >> "$GITHUB_ENV"
+        echo "Detected Clang: $CLANG_VERSION"
+
+    - name: Build Kernel Modules 
+      shell: bash
+      run: |
+        set -euo pipefail
+        KERNEL_PLATFORM="$GITHUB_WORKSPACE/$CONFIG/kernel_platform"
+        MSM="$KERNEL_PLATFORM/msm-kernel"
+        OUT=out
+        export PATH="${CLANG_BIN_PATH}:$PATH" 
+        export PATH="/usr/lib/ccache:$PATH"
+        
+        
+        cd "$MSM"
+
+        # Merge defconfig fragments from vendor/kalama_GKI.config
+        cat arch/arm64/configs/vendor/pineapple_GKI.config >> ./arch/arm64/configs/gki_defconfig
+
+        # Thin LTO
+        echo "CONFIG_LTO_CLANG_THIN=y" >> ./arch/arm64/configs/gki_defconfig                                                                            
+        echo "CONFIG_LTO_CLANG=y" >> ./arch/arm64/configs/gki_defconfig
+        echo "CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y" >> "./arch/arm64/configs/gki_defconfig"
+        echo "CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE_O3=n" >> "./arch/arm64/configs/gki_defconfig"
+
+        INSTALL_MOD_PATH="$MSM/out"
+        
+        echo "Building kernel modules..."
+        make ARCH=arm64 LLVM=1 O=out gki_defconfig   
+        make -j$(nproc --all) ARCH=arm64 LLVM=1 O=out CC="ccache clang" modules       
+        make -j$(nproc --all) ARCH=arm64 LLVM=1 O=out INSTALL_MOD_PATH=$INSTALL_MOD_PATH modules_install
+        
+        echo "Building out of tree external kernel modules..."
+        #cd "$KERNEL_PLATFORM"
+        #QCA_WLAN_DIR="$GITHUB_WORKSPACE/$CONFIG/vendor/qcom/opensource/wlan/qcacld-3.0/"
+        
+        #cd "$MSM"
+        #make -C ../../vendor/qcom/opensource/datarmnet-ext/aps M=../../vendor/qcom/opensource/datarmnet-ext/aps KERNEL_SRC=$KERNEL_PLATFORM/./msm-kernel O=$OUT LLVM=1 DEPMOD=depmod DTC=$KERNEL_PLATFORM/build/kernel/build-tools/path/linux-x86/dtc RMNET_CORE_INC_DIR=$CONFIG/vendor/qcom/opensource/datarmnet/core RMNET_CORE_PATH=vendor/qcom/opensource/datarmnet/core DATARMNET_CORE_PATH=datarmnet/core ANDROID_BUILD_TOP=$CONFIG KBUILD_MIXED_TREE=..//device/qcom/kalama-kernel
+        
+        #make -C ../../vendor/qcom/opensource/wlan/platform M=../../vendor/qcom/opensource/wlan/platform KERNEL_SRC=$KERNEL_PLATFORM/./msm-kernel O=$OUT LLVM=1 DEPMOD=depmod DTC=$KERNEL_PLATFORM/build/kernel/build-tools/path/linux-x86/dtc WLAN_PLATFORM_ROOT=$CONFIG/vendor/qcom/opensource/wlan/platform HAVE_ARCH_COMPILER_H=y CONFIG_CNSS_OUT_OF_TREE=y CONFIG_CNSS2=m CONFIG_CNSS2_QMI=y CONFIG_CNSS_QMI_SVC=m CONFIG_CNSS_PLAT_IPC_QMI_SVC=m CONFIG_CNSS_GENL=m CONFIG_WCNSS_MEM_PRE_ALLOC=m CONFIG_CNSS_UTILS=m CONFIG_BUS_AUTO_SUSPEND=y CONFIG_CNSS_HW_SECURE_DISABLE=y KERNEL_SUPPORTS_NESTED_COMPOSITES=n KBUILD_EXTRA_SYMBOLS=$OUT/sec-module-symvers_intermediates/Module.symvers ANDROID_BUILD_TOP=$CONFIG KBUILD_MIXED_TREE=..//device/qcom/kalama-kernel
+        
+    - name: Filter modules
+      shell: bash
+      run: |
+        set -euo pipefail
+        KERNEL_PLATFORM="$GITHUB_WORKSPACE/$CONFIG/kernel_platform"
+        MSM="$KERNEL_PLATFORM/msm-kernel"
+        OUT="$MSM/out"
+        UNAME=$(ls "$OUT/lib/modules/")
+
+        echo "Copying all modules to $OUT/modules"
+        cd "$OUT"
+        mkdir -p modules
+        find lib/modules/"$UNAME" -type f -name '*.ko' -exec cp {} modules/ \;
+        echo "Total modules copied: $(find modules -type f -name '*.ko' | wc -l)"
+
+        echo "Removing unnecessary modules..."
+        cd modules
+        # Download default module list
+        curl -L -o default_modules.txt https://raw.githubusercontent.com/terminal-beginner/kernel_patches/refs/heads/main/default_modules.txt
+        # Remove modules in the default list
+        
+        while IFS= read -r module; do
+          if [ -e "$module" ]; then
+            rm -f "$module"
+            echo "Removed module: $module"
+          fi
+        done < default_modules.txt
+        cd ..
+        echo "Modules remaining after filtering: $(find modules -type f -name '*.ko' | wc -l)"
+
+    - name: Create Kernel Modules zip
+      id: create_zip
+      shell: bash
+      run: |
+        set -euo pipefail
+        CONFIG_DIR="$GITHUB_WORKSPACE/$CONFIG"
+        KERNEL_PLATFORM="$CONFIG_DIR/kernel_platform"
+        MSM="$KERNEL_PLATFORM/msm-kernel"
+        OUT="$MSM/out"
+        MODULES_SRC="$OUT/modules"
+        MODULES_ZIP="$CONFIG_DIR/artifacts/kernel_modules_${{ inputs.model }}.zip"
+        mkdir -p "$CONFIG_DIR/artifacts"
+        find "$MODULES_SRC" -type f -name '*.ko' -print0 | xargs -0 zip -j "$MODULES_ZIP"
+        echo "Packaged kernel modules to $MODULES_ZIP"
+        
+    - name: Final Build Summary
+      shell: bash
+      run: |
+        set -euo pipefail
+        {
+          echo "CCache Statistics :"
+          echo "$(/usr/bin/ccache -s)"
+        } | tee summary.txt
+        {
+          echo "### Kernel Modules Build Summary"
+          echo ""
+          echo "CCache Statistics :"
+          echo "$(ccache -s -v)"
+        } >> "$GITHUB_STEP_SUMMARY"
+        
+    - name: Cleanup old ccache
+      shell: bash
+      run: |
+        set -euo pipefail
+        echo "Deleting old ccache..."
+        gh cache delete ccache-${{ env.CONFIG }}-kernel-${{ env.KERNEL_FULL_VER }}- || true
+
+    - name: Upload Kernel Modules zip
+      if: success() && steps.create_zip.conclusion == 'success'
+      uses: actions/upload-artifact@v4
+      with:
+        name: kernel-modules-${{ env.CONFIG }}
+        path: ${{ env.CONFIG }}/artifacts/
