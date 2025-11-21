@@ -2,7 +2,6 @@ name: Build OnePlus 13R Bright-Star Kernel & Modules
 description: |
   Builds the Bright-Star kernel image **and** out-of-tree kernel modules
   for OnePlus 13R (sm8650) in one shot.
-author: terminal-beginner
 
 inputs:
   op_config_json:
