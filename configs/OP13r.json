@@ -1,14 +1,12 @@
 {
-  "model": "OP11",
-  "soc": "kalama",
-  "branch": "oneplus/sm8550",
-  "manifest_oos14": "oneplus_11_u.xml",
-  "manifest_oos14_modules": "oneplus_11_u.xml",
-  "manifest_oos15": "oneplus_11_v.xml",
-  "manifest_oos15_modules": "oneplus_11_v.xml",
+  "model": "OP13r",
+  "soc": "pineapple",
+  "branch": "oneplus/sm8650",
+  "manifest_oos15": "oneplus_13r_v.xml",
+  "manifest_oos15_modules": "oneplus_13r_v.xml",
   "manifest_fast_build_oos15": "https://raw.githubusercontent.com/0x-br0k3n/kernel_patches/refs/heads/main/kernel_manifest/oneplus_11_v_kernel.xml",
   "manifest_fast_build_oos15_modules": "https://raw.githubusercontent.com/0x-br0k3n/kernel_patches/refs/heads/main/kernel_manifest/oneplus_11_v_modules.xml",
-  "android_version": "android13",
-  "kernel_version": "5.15",
+  "android_version": "android14",
+  "kernel_version": "6.1",
   "hmbird": false
 }
