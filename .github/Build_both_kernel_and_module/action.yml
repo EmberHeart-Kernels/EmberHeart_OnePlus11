@@ -1,8 +1,5 @@
-name: Build OnePlus 13R Bright-Star Kernel & Unified Modules
-
-permissions:
-  contents: write
-  actions: write
+name: Build Kernel & Modules
+description: Builds kernel image and unified modules
 
 inputs:
   op_config_json:
@@ -72,37 +69,37 @@ runs:
         manifest="$OP_MANIFEST"
         optimize='${{ inputs.optimize_level }}'
     
-        [[ -n "$model" ]] || { echo "Input 'model' cannot be empty"; exit 1; }
-        [[ -n "$soc" ]] || { echo "Input 'soc' cannot be empty"; exit 1; }
-        [[ -n "$branch" ]] || { echo "Input 'branch' cannot be empty"; exit 1; }
-        [[ -n "$manifest" ]] || { echo "Input 'manifest' cannot be empty"; exit 1; }
+        [[ -n "$model" ]] || { echo "❌ Input 'model' cannot be empty"; exit 1; }
+        [[ -n "$soc" ]] || { echo "❌ Input 'soc' cannot be empty"; exit 1; }
+        [[ -n "$branch" ]] || { echo "❌ Input 'branch' cannot be empty"; exit 1; }
+        [[ -n "$manifest" ]] || { echo "❌ Input 'manifest' cannot be empty"; exit 1; }
     
         if ! [[ "$soc" =~ ^[A-Za-z0-9_-]+$ ]]; then
-          echo "Input 'soc' contains invalid characters"; exit 1
+          echo "❌ Input 'soc' contains invalid characters"; exit 1
         fi    
         if ! [[ "$branch" =~ ^[A-Za-z0-9._/-]+$ ]]; then
-          echo "Input 'branch' contains invalid characters"; exit 1
+          echo "❌ Input 'branch' contains invalid characters"; exit 1
         fi    
         if [[ "$manifest" == http*://* ]]; then
           if ! [[ "$manifest" =~ ^https:// ]]; then
-            echo "Manifest URL must be HTTPS"; exit 1
+            echo "❌ Manifest URL must be HTTPS"; exit 1
           fi
           if ! [[ "$manifest" =~ \.xml($|\?) ]]; then
-            echo "Manifest URL should point to an XML file"; exit 1
+            echo "❌ Manifest URL should point to an XML file"; exit 1
           fi
         else
           if ! [[ "$manifest" =~ \.xml$ ]]; then
-            echo "Manifest filename must end with .xml"; exit 1
+            echo "❌ Manifest filename must end with .xml"; exit 1
           fi
           if [[ "$manifest" =~ [[:space:]] ]]; then
-            echo "Manifest filename cannot contain spaces"; exit 1
+            echo "❌ Manifest filename cannot contain spaces"; exit 1
           fi
         fi
         case "$optimize" in
           O2|O3) ;;
-          *) echo "optimize_level must be O2 or O3; got '$optimize'"; exit 1 ;;
+          *) echo "❌ optimize_level must be O2 or O3; got '$optimize'"; exit 1 ;;
         esac
-        echo "Input validation OK."
+        echo "✅ Input validation OK."
         echo "::endgroup::"
 
     - name: Install Minimal Dependencies
@@ -126,7 +123,7 @@ runs:
         echo "CONFIG=$CONFIG" >> "$GITHUB_ENV"
         REPO="/usr/local/bin/repo"
         if [ ! -x "$REPO" ]; then
-          curl -s https://storage.googleapis.com/git-repo-downloads/repo  -o "$REPO"
+          curl -s https://storage.googleapis.com/git-repo-downloads/repo -o "$REPO"
           chmod +x "$REPO"
         fi
         echo "REPO=$REPO" >> "$GITHUB_ENV"
@@ -141,9 +138,9 @@ runs:
         if [[ "$OP_MANIFEST" == https://* ]]; then
           mkdir -p .repo/manifests
           curl --fail --show-error --location --proto '=https' "$OP_MANIFEST" -o .repo/manifests/temp_manifest.xml
-          "$REPO" init -u https://github.com/OnePlusOSS/kernel_manifest.git  -b oneplus/sm8650 -m temp_manifest.xml --repo-rev=v2.16 --depth=1 --no-clone-bundle --no-tags
+          "$REPO" init -u https://github.com/OnePlusOSS/kernel_manifest.git -b oneplus/sm8650 -m temp_manifest.xml --repo-rev=v2.16 --depth=1 --no-clone-bundle --no-tags
         else
-          "$REPO" init -u https://github.com/OnePlusOSS/kernel_manifest.git  -b "$OP_BRANCH" -m "$OP_MANIFEST" --repo-rev=v2.16 --depth=1 --no-clone-bundle --no-tags
+          "$REPO" init -u https://github.com/OnePlusOSS/kernel_manifest.git -b "$OP_BRANCH" -m "$OP_MANIFEST" --repo-rev=v2.16 --depth=1 --no-clone-bundle --no-tags
         fi
         "$REPO" --version
         success=false
@@ -153,10 +150,10 @@ runs:
             success=true
             break
           fi
-          echo "repo sync attempt $i failed; retrying..."
+          echo "⚠️ repo sync attempt $i failed; retrying..."
           sleep 30
         done
-        $success || { echo "repo sync failed after 3 attempts"; exit 1; }
+        $success || { echo "❌ repo sync failed after 3 attempts"; exit 1; }
 
     - name: Get Kernel Version Info
       shell: bash
@@ -175,12 +172,12 @@ runs:
           fi
         done
         if [ -z "$BRANCH_LINE" ]; then
-          echo "Error: No BRANCH= found"; exit 1
+          echo "❌ Error: No BRANCH= found"; exit 1
         fi
         BRANCH_VALUE="${BRANCH_LINE#*=}"
         ANDROID_VERSION="${BRANCH_VALUE%-*}"
         if [ -z "$ANDROID_VERSION" ]; then
-          echo "Could not parse android version from BRANCH=$BRANCH_VALUE"
+          echo "❌ Could not parse android version from BRANCH=$BRANCH_VALUE"
           exit 1
         fi
         VERSION=$(grep '^VERSION *=' Makefile | awk '{print $3}')
@@ -204,7 +201,7 @@ runs:
         job-summary: 'CCache stats'
         evict-old-files: 'job'
 
-    - name: Clone AnyKernel3 and Other Dependencies
+    - name: Clone Dependencies
       shell: bash
       run: |
         set -euo pipefail
@@ -214,17 +211,17 @@ runs:
         else
           SUSFS_BRANCH="${{ inputs.susfs_commit_hash_or_branch }}"
         fi
-        git clone --depth=1 https://github.com/TheWildJames/AnyKernel3.git  -b "$ANYKERNEL_BRANCH"
-        git clone --depth=1 https://github.com/TheWildJames/kernel_patches.git 
-        git clone --depth=1 https://github.com/terminal-beginner/kernel_patches.git  my_patches
-        git clone https://gitlab.com/simonpunk/susfs4ksu.git 
+        git clone --depth=1 https://github.com/TheWildJames/AnyKernel3.git -b "$ANYKERNEL_BRANCH"
+        git clone --depth=1 https://github.com/TheWildJames/kernel_patches.git  
+        git clone --depth=1 https://github.com/terminal-beginner/kernel_patches.git my_patches
+        git clone https://gitlab.com/simonpunk/susfs4ksu.git  
         cd susfs4ksu
         if git rev-parse --verify "origin/$SUSFS_BRANCH" >/dev/null 2>&1 || git rev-parse --verify "$SUSFS_BRANCH" >/dev/null 2>&1; then
           git checkout "$SUSFS_BRANCH"
           SUSFS_COMMIT_SHA=$(git rev-parse HEAD)
           echo "SUSFS_COMMIT_SHA=$SUSFS_COMMIT_SHA" >> $GITHUB_ENV
         else
-          echo "Error: SUSFS branch '$SUSFS_BRANCH' not found."
+          echo "❌ SUSFS branch '$SUSFS_BRANCH' not found."
           exit 1
         fi
 
@@ -238,12 +235,12 @@ runs:
         df -h
 
     # ==================== KERNEL BUILD ====================
-    - name: Add BBG
+    - name: Add Baseband Guard
       shell: bash
       run: |
         set -euo pipefail
         cd "$CONFIG/kernel_platform"
-        wget -O- https://github.com/vc-teahouse/Baseband-guard/raw/main/setup.sh  | bash
+        wget -O- https://github.com/vc-teahouse/Baseband-guard/raw/main/setup.sh | bash
         echo "CONFIG_BBG=y" >> common/arch/arm64/configs/gki_defconfig
         sed -i '/^config LSM$/,/^help$/{ /^[[:space:]]*default/ { /baseband_guard/! s/lockdown/lockdown,baseband_guard/ } }' common/security/Kconfig
 
@@ -253,9 +250,9 @@ runs:
         set -euo pipefail
         cd "$CONFIG/kernel_platform"
         if [ "${{ inputs.ksun_branch }}" = "stable" ]; then
-          curl --fail --location --proto '=https' -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh " | bash -
+          curl --fail --location --proto '=https' -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -
         else
-          curl --fail --location --proto '=https' -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh " | bash -s "${{ inputs.ksun_branch }}"
+          curl --fail --location --proto '=https' -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s "${{ inputs.ksun_branch }}"
         fi
         git submodule update --init --recursive
         cd KernelSU-Next
@@ -286,7 +283,7 @@ runs:
             ;;
           "v1.5.8")
             cp ../../../susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch ./
-            patch -p1 --forward --fuzz=3 < 10_enable_susfs_for_ksu.patch  || true
+            patch -p1 --forward --fuzz=3 < 10_enable_susfs_for_ksu.patch || true
             for patch in fix_apk_sign.c fix_core_hook.c fix_selinux.c fix_ksud.c; do
               cp "../../../kernel_patches/next/susfs_fix_patches/$susfs_version/${patch}.patch" ./
               patch -p1 --forward --fuzz=3 < "${patch}.patch"
@@ -294,14 +291,14 @@ runs:
             ;;
           "v1.5.9"|"v1.5.10"|"v1.5.11"|"v1.5.12")
             cp ../../../susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch ./
-            patch -p1 --forward < 10_enable_susfs_for_ksu.patch  || true
+            patch -p1 --forward < 10_enable_susfs_for_ksu.patch || true
             for file in $(find ./kernel -maxdepth 2 -name "*.rej" -printf "%f\n" | cut -d'.' -f1); do
               patch -p1 --forward < "../../../kernel_patches/next/susfs_fix_patches/$susfs_version/fix_$file.c.patch"
             done
             patch -p1 --forward < "../../../kernel_patches/next/susfs_fix_patches/$susfs_version/fix_kernel_compat.c.patch"
             ;;
           *)
-            echo "Invalid version: $susfs_version"
+            echo "❌ Invalid SUSFS version: $susfs_version"
             exit 1
             ;;
         esac
@@ -344,7 +341,7 @@ runs:
         cd "$CONFIG/kernel_platform/common"
         patch -p1 < ../../../kernel_patches/next/scope_min_manual_hooks_v1.4.patch
 
-    - name: Add KernelSU-Next and SUSFS Configuration
+    - name: Configure Kernel
       shell: bash
       run: |
         set -euo pipefail
@@ -371,14 +368,6 @@ runs:
         CONFIG_KSU_SUSFS_SUS_SU=n
         CONFIG_TMPFS_XATTR=y
         CONFIG_TMPFS_POSIX_ACL=y
-        EOF
-
-    - name: Add Essential Networking Configs
-      shell: bash
-      run: |
-        set -euo pipefail
-        cd "$CONFIG/kernel_platform"
-        cat >> common/arch/arm64/configs/gki_defconfig <<EOF
         CONFIG_TCP_CONG_ADVANCED=y
         CONFIG_TCP_CONG_BBR=y
         CONFIG_NET_SCH_FQ=y
@@ -419,11 +408,11 @@ runs:
           CLANG_FOUND=true
           echo "Using system clang."
         fi
-        $CLANG_FOUND || { echo "No clang toolchain found"; exit 1; }
+        $CLANG_FOUND || { echo "❌ No clang toolchain found"; exit 1; }
         echo "CLANG_BIN_PATH=$CLANG_BIN" >> "$GITHUB_ENV"
         CLANG_VERSION="$("$CLANG_BIN/clang" --version | head -n1)"
         echo "CLANG_VERSION=$CLANG_VERSION" >> "$GITHUB_ENV"
-        echo "Detected Clang: $CLANG_VERSION"
+        echo "✅ Detected Clang: $CLANG_VERSION"
 
     - name: Build Kernel
       shell: bash
@@ -474,13 +463,13 @@ runs:
         KCPPFLAGS="-DCONFIG_OPTIMIZE_INLINING"
         
         make O="$OUT" olddefconfig
-        echo "Starting build with $(nproc --all) threads..."
+        echo "🔨 Starting build with $(nproc --all) threads..."
         set -o pipefail
         make -j"$(nproc --all)" O="$OUT" KCFLAGS="$KCFLAGS" KCPPFLAGS="$KCPPFLAGS" 2>&1 | tee build.log
         
         IMG="$OUT/arch/arm64/boot/Image"
         if [ ! -f "$IMG" ]; then
-          echo "Kernel Image missing"
+          echo "❌ Kernel Image missing"
           exit 1
         fi
         sha256sum "$IMG" | tee "$OUT/Image.sha256"
@@ -505,21 +494,21 @@ runs:
           echo "KERNEL_UNAME=${KERNEL_UNAME:-unknown}" >> "$GITHUB_ENV"
     
           if ! file "$IMG" | grep -qi 'ARM64'; then
-            echo "WARNING: Image does not appear to be ARM64:"
+            echo "⚠️ WARNING: Image does not appear to be ARM64:"
             file "$IMG" || true
           fi
     
           MIN_SIZE=$((6*1024*1024))
           ACTUAL_SIZE=$(stat -c %s "$IMG" || echo 0)
           if [ "$ACTUAL_SIZE" -lt "$MIN_SIZE" ]; then
-            echo "WARNING: Image size $ACTUAL_SIZE < $MIN_SIZE (suspicious)."
+            echo "⚠️ WARNING: Image size $ACTUAL_SIZE < $MIN_SIZE (suspicious)."
           fi
     
           CALC_SHA=$(sha256sum "$IMG" | cut -d' ' -f1)
           if [ -f "$OUT/Image.sha256" ]; then
             REC_SHA=$(cut -d' ' -f1 "$OUT/Image.sha256" | tr -d '\n')
             if [ "$CALC_SHA" != "$REC_SHA" ]; then
-              echo "WARNING: Image.sha256 mismatch."
+              echo "⚠️ WARNING: Image.sha256 mismatch."
             fi
             IMAGE_SHA256="$REC_SHA"
           else
@@ -551,29 +540,6 @@ runs:
           exit 1
         fi
 
-    - name: Collect Common Kernel Modules
-      shell: bash
-      run: |
-        set -euo pipefail
-        CONFIG_DIR="$GITHUB_WORKSPACE/$CONFIG"
-        KERNEL_PATH="$CONFIG_DIR/kernel_platform"
-        COMMON="$KERNEL_PATH/common"
-        OUT="$COMMON/out"
-        
-        # Create unified modules directory
-        UNIFIED_MODULES="$CONFIG_DIR/artifacts/all_modules"
-        mkdir -p "$UNIFIED_MODULES"
-        
-        # Install common kernel modules
-        cd "$COMMON"
-        make O="$OUT" INSTALL_MOD_PATH="$CONFIG_DIR/artifacts/common_modules" modules_install
-        
-        # Copy common modules to unified location
-        if [ -d "$CONFIG_DIR/artifacts/common_modules" ]; then
-          find "$CONFIG_DIR/artifacts/common_modules" -name "*.ko" -exec cp {} "$UNIFIED_MODULES/" \;
-          echo "✅ Collected $(find "$UNIFIED_MODULES" -name "*.ko" | wc -l) modules from common kernel"
-        fi
-
     - name: Create Kernel ZIP
       id: create_kernel_zip
       shell: bash
@@ -582,7 +548,7 @@ runs:
         CONFIG_DIR="$GITHUB_WORKSPACE/$CONFIG"
         IMAGE_PATH="$CONFIG_DIR/kernel_platform/common/out/arch/arm64/boot/Image"
         if [ ! -f "$IMAGE_PATH" ]; then
-          echo "ERROR: Built Image not found"
+          echo "❌ ERROR: Built Image not found"
           exit 1
         fi
     
@@ -594,14 +560,13 @@ runs:
         ARTIFACTS_DIR="$CONFIG_DIR/artifacts"
         mkdir -p "$ARTIFACTS_DIR"
 
-        echo "Creating flashable zip: $ZIP_NAME"
+        echo "📦 Creating flashable zip: $ZIP_NAME"
         ( cd "$GITHUB_WORKSPACE/AnyKernel3" && zip -r "$ARTIFACTS_DIR/$ZIP_NAME" ./* >/dev/null )
         
         find "$ARTIFACTS_DIR" -maxdepth 1 -type f ! -name "$ZIP_NAME" ! -name "${OP_MODEL}.txt" ! -name "gki_defconfig_*" ! -name "all_modules" -delete
         echo "kernel_zip=$ZIP_NAME" >> "$GITHUB_OUTPUT"
         
-    - name: Upload Boot Image
-      if: success() && steps.create_kernel_zip.conclusion == 'success'
+    - name: Create Boot Image
       shell: bash
       run: |
         set -euo pipefail
@@ -611,10 +576,10 @@ runs:
         cd "$GITHUB_WORKSPACE"
         mkdir -p boot
         
-        wget -q https://github.com/terminal-beginner/Bright-Star_OnePlus13R/raw/refs/heads/main/tools/boot.zip 
+        wget -q https://github.com/terminal-beginner/Bright-Star_OnePlus13R/raw/refs/heads/main/tools/boot.zip  
         unzip -q boot.zip
         
-        wget -q https://github.com/magojohnji/magiskboot-linux/raw/refs/heads/main/x86_64/magiskboot 
+        wget -q https://github.com/magojohnji/magiskboot-linux/raw/refs/heads/main/x86_64/magiskboot  
         MAGISKBOOT="./magiskboot"
         chmod +x $MAGISKBOOT
         
@@ -625,7 +590,7 @@ runs:
         $MAGISKBOOT repack $BOOT
         
         mv -f new-boot.img Bright-Star_boot.img
-        cp Bright-Star_boot.img "$CONFIG_DIR/artifacts/"     
+        cp Bright-Star_boot.img "$CONFIG_DIR/artifacts/"
 
     # ==================== MODULE BUILD ====================
     - name: Add NetHunter Module Configs
@@ -705,14 +670,14 @@ runs:
         CONFIG_CAN_SLCAN=m
         EOF
 
-    - name: Add memkernel module
+    - name: Add MemKernel Module
       shell: bash
       run: |
         set -euo pipefail
         cd "$CONFIG/kernel_platform/msm-kernel"
-        curl -LSs "https://raw.githubusercontent.com/Poko-Apps/MemKernel/main/kernel/setup.sh " | bash -s M Bright-Star
+        curl -LSs "https://raw.githubusercontent.com/Poko-Apps/MemKernel/main/kernel/setup.sh" | bash -s M Bright-Star
 
-    - name: Add rtw88 modules
+    - name: Add rtw88 Modules
       shell: bash
       run: |
         set -euo pipefail
@@ -720,7 +685,7 @@ runs:
         MSM="$KERNEL_PATH/msm-kernel"
         cd "$MSM/drivers/net/wireless/realtek/"
         rm -rf rtw88
-        git clone https://github.com/lwfinger/rtw88.git 
+        git clone https://github.com/lwfinger/rtw88.git  
         sed -i 's/$(CONFIG_RTW88)/m/g' Makefile
         sed -i '/^source "drivers\/net\/wireless\/realtek\/rtw88\/Kconfig"$/s/.*/ /' Kconfig
 
@@ -748,6 +713,25 @@ runs:
         make -j$(nproc --all) ARCH=arm64 LLVM=1 O=out CC="ccache clang" modules
         make -j$(nproc --all) ARCH=arm64 LLVM=1 O=out INSTALL_MOD_PATH="$INSTALL_MOD_PATH" modules_install
 
+    - name: Collect Common Kernel Modules
+      shell: bash
+      run: |
+        set -euo pipefail
+        CONFIG_DIR="$GITHUB_WORKSPACE/$CONFIG"
+        KERNEL_PATH="$CONFIG_DIR/kernel_platform"
+        COMMON="$KERNEL_PATH/common"
+        OUT="$COMMON/out"
+        
+        UNIFIED_MODULES="$CONFIG_DIR/artifacts/all_modules"
+        mkdir -p "$UNIFIED_MODULES"
+        
+        cd "$COMMON"
+        make O="$OUT" INSTALL_MOD_PATH="$CONFIG_DIR/artifacts/common_modules" modules_install
+        
+        if [ -d "$CONFIG_DIR/artifacts/common_modules" ]; then
+          find "$CONFIG_DIR/artifacts/common_modules" -name "*.ko" -exec cp {} "$UNIFIED_MODULES/" \;
+        fi
+
     - name: Merge All Modules
       shell: bash
       run: |
@@ -757,25 +741,21 @@ runs:
         MSM_MODULES="$CONFIG_DIR/artifacts/msm_modules"
         COMMON_MODULES="$CONFIG_DIR/artifacts/common_modules"
         
-        # Create unified directory if not exists
         mkdir -p "$UNIFIED_MODULES"
         
-        # Copy MSM modules (overwrites duplicates with newer ones)
         if [ -d "$MSM_MODULES" ]; then
           find "$MSM_MODULES" -name "*.ko" -exec cp -f {} "$UNIFIED_MODULES/" \;
         fi
         
-        # Copy any remaining common modules (if not already copied)
         if [ -d "$COMMON_MODULES" ]; then
           find "$COMMON_MODULES" -name "*.ko" -exec cp -n {} "$UNIFIED_MODULES/" \;
         fi
         
         echo "✅ Total modules collected: $(find "$UNIFIED_MODULES" -name "*.ko" | wc -l)"
         
-        # Clean up intermediate directories
         rm -rf "$MSM_MODULES" "$COMMON_MODULES"
 
-    - name: Filter modules
+    - name: Filter Modules
       shell: bash
       run: |
         set -euo pipefail
@@ -784,10 +764,8 @@ runs:
         
         cd "$UNIFIED_MODULES"
         
-        # Download default module list
-        curl -L -o default_modules.txt https://raw.githubusercontent.com/terminal-beginner/kernel_patches/refs/heads/main/default_modules.txt
+        curl -L -o default_modules.txt https://raw.githubusercontent.com/terminal-beginner/kernel_patches/refs/heads/main/default_modules.txt 
         
-        # Remove modules in the default list
         while IFS= read -r module; do
           if [ -e "$module" ]; then
             rm -f "$module"
@@ -810,56 +788,12 @@ runs:
         cd "$UNIFIED_MODULES"
         find . -name "*.ko" -print0 | xargs -0 zip -j "$MODULES_ZIP"
         
-        echo "✅ Created unified modules package: $(basename "$MODULES_ZIP")"
+        echo "✅ Modules ZIP: $(basename "$MODULES_ZIP")"
         echo "modules_zip=$(basename "$MODULES_ZIP")" >> "$GITHUB_OUTPUT"
         
-        # Clean up
         rm -rf "$UNIFIED_MODULES"
 
     # ==================== FINALIZATION ====================
-    - name: Final Build Summary
-      shell: bash
-      run: |
-        set -euo pipefail
-        {
-          echo "=== BUILD COMPLETE ==="
-          echo "Model: ${OP_MODEL}"
-          echo "Android: ${{ env.ANDROID_VER }}"
-          echo "Kernel: ${{ env.KERNEL_FULL_VER }}"
-          echo "KSU: ${KSUVER:-unknown}"
-          echo "SUSFS: ${SUSVER:-unknown}"
-          echo "Image SHA256: ${{ steps.collect_stats.outputs.image_sha256 }}"
-          echo "Warnings: ${{ steps.collect_stats.outputs.warnings }}"
-          echo ""
-          echo "Artifacts:"
-          echo "- Kernel ZIP: ${{ steps.create_kernel_zip.outputs.kernel_zip }}"
-          echo "- Modules ZIP: ${{ steps.create_modules_zip.outputs.modules_zip }}"
-          echo ""
-          echo "CCache Statistics:"
-          echo "$(ccache -s -v)"
-        } | tee summary.txt
-        
-        {
-          echo "### Combined Build Summary"
-          echo ""
-          echo "#### Kernel"
-          echo "- Version: ${{ steps.save_metadata.outputs.kernel_version }}"
-          echo "- KSU Next: ${KSUVER:-unknown}"
-          echo "- SUSFS: ${SUSVER:-unknown}"
-          echo "- SHA256: ${{ steps.collect_stats.outputs.image_sha256 }}"
-          echo "- Warnings: ${{ steps.collect_stats.outputs.warnings }}"
-          echo ""
-          echo "#### Modules"
-          echo "- Package: ${{ steps.create_modules_zip.outputs.modules_zip }}"
-          echo "- Source: common + msm-kernel (unified)"
-        } >> "$GITHUB_STEP_SUMMARY"
-
-    - name: Cleanup old ccache
-      shell: bash
-      run: |
-        set -euo pipefail
-        gh cache delete ccache-${{ env.CONFIG }}-kernel-${{ env.KERNEL_FULL_VER }}- || true
-
     - name: Upload All Artifacts
       if: success()
       uses: actions/upload-artifact@v4
