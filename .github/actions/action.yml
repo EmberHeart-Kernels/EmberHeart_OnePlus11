@@ -768,6 +768,23 @@ runs:
         echo "warnings=$WARNINGS" >> "$GITHUB_OUTPUT"
         echo "image_sha256=${IMAGE_SHA256:-}" >> "$GITHUB_OUTPUT"
 
+    - name: Save Kernel Config
+      shell: bash
+      run: |
+        set -euo pipefail
+        CONFIG_DIR="$GITHUB_WORKSPACE/$CONFIG"
+        ARTIFACTS_DIR="$CONFIG_DIR/artifacts"
+        KERNEL_CONFIG_PATH="$CONFIG_DIR/kernel_platform/common/out/.config"
+        
+        if [ -f "$KERNEL_CONFIG_PATH" ]; then
+          CONFIG_FILENAME="gki_defconfig_${{ env.KERNEL_FULL_VER }}"
+          cp "$KERNEL_CONFIG_PATH" "$ARTIFACTS_DIR/$CONFIG_FILENAME"
+          echo "✅ Kernel config saved: $CONFIG_FILENAME"
+        else
+          echo "⚠️ WARNING: Kernel config not found at $KERNEL_CONFIG_PATH"
+          exit 1
+        fi
+
     - name: Create Kernel ZIP
       id: create_zip
       shell: bash
