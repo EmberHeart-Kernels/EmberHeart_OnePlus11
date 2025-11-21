@@ -1,0 +1,765 @@
+name: Build OnePlus 13R Kernel & Release
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_type:
+        description: '📦 Release type'
+        required: true
+        type: choice
+        options:
+          - none
+          - Pre-release
+          - Release
+        default: none
+      manifest:
+        description: '📄 Select manifest'
+        required: true
+        type: choice
+        options:
+          - OOS14
+          - OOS15
+          - FAST_BUILD_OOS15
+        default: OOS15
+      ksun_branch:
+        description: '🌳 KernelSU Next branch/commit'
+        required: true
+        type: string
+        default: next
+      optimize_level:
+        description: '⚡ Optimization level'
+        required: true
+        type: choice
+        options: [O2, O3]
+        default: O2
+      kernel_version:
+        description: '🏷️ Kernel version (e.g., 1.5.12)'
+        required: true
+        type: string
+        default: '1.5.12'
+      kernel_uname:
+        description: '✨ Kernel uname'
+        type: string
+        default: 'Bright-Star'
+      susfs_branch_or_commit:
+        description: '🔒 SUSFS branch/commit (leave empty for auto)'
+        type: string
+        default: ''
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      CONFIG_DIR: "OP13R"
+    steps:
+      # ==================== SETUP PHASE ====================
+      - name: ⬇️ Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: 📝 Parse Device Config
+        shell: bash
+        run: |
+          set -euo pipefail
+          
+          # Read config from JSON file
+          CONFIG_FILE="${GITHUB_WORKSPACE}/configs/${CONFIG_DIR}.json"
+          if [[ ! -f "$CONFIG_FILE" ]]; then
+            echo "❌ Config file not found: $CONFIG_FILE"
+            exit 1
+          fi
+          
+          echo "✅ Reading config from: $CONFIG_FILE"
+          cat "$CONFIG_FILE"
+          
+          # Parse JSON and set environment variables
+          echo "OP_MODEL=$(jq -r '.model' "$CONFIG_FILE")" >> $GITHUB_ENV
+          echo "OP_SOC=$(jq -r '.soc' "$CONFIG_FILE")" >> $GITHUB_ENV
+          echo "OP_BRANCH=$(jq -r '.branch' "$CONFIG_FILE")" >> $GITHUB_ENV
+          
+          # Set manifest based on selection
+          MANIFEST_KEY="manifest_${{ inputs.manifest }}"
+          MANIFEST_VALUE=$(jq -r ".$MANIFEST_KEY // empty" "$CONFIG_FILE")
+          
+          if [[ -z "$MANIFEST_VALUE" ]]; then
+            echo "❌ Manifest not found for: ${{ inputs.manifest }}"
+            exit 1
+          fi
+          
+          echo "OP_MANIFEST=$MANIFEST_VALUE" >> $GITHUB_ENV
+          echo "✅ Model: $OP_MODEL"
+          echo "✅ SoC: $OP_SOC"
+          echo "✅ Manifest: ${{ inputs.manifest }} → $MANIFEST_VALUE"
+
+      - name: 📦 Install Dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Installing build dependencies..."
+          sudo apt-get -o Acquire::Retries=3 update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            git curl ca-certificates build-essential clang lld flex bison \
+            libelf-dev libssl-dev libncurses-dev zlib1g-dev liblz4-tool \
+            libxml2-utils rsync unzip dwarves file python3 ccache jq wget
+          sudo apt-get clean
+
+      - name: 🛠️ Setup Build Environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          REPO="/usr/local/bin/repo"
+          if [[ ! -x "$REPO" ]]; then
+            curl -s https://storage.googleapis.com/git-repo-downloads/repo   -o "$REPO"
+            chmod +x "$REPO"
+          fi
+          echo "REPO=$REPO" >> $GITHUB_ENV
+          mkdir -p "$CONFIG_DIR"
+
+      - name: 🔄 Sync Kernel Source
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$CONFIG_DIR"
+          
+          if [[ "$OP_MANIFEST" == https://* ]]; then
+            mkdir -p .repo/manifests
+            curl --fail --location --proto '=https' "$OP_MANIFEST" -o .repo/manifests/temp_manifest.xml
+            "$REPO" init -u https://github.com/OnePlusOSS/kernel_manifest.git  -b oneplus/sm8650 -m temp_manifest.xml --repo-rev=v2.16 --depth=1 --no-clone-bundle --no-tags
+          else
+            "$REPO" init -u https://github.com/OnePlusOSS/kernel_manifest.git  -b "$OP_BRANCH" -m "$OP_MANIFEST" --repo-rev=v2.16 --depth=1 --no-clone-bundle --no-tags
+          fi
+          
+          "$REPO" sync -c --no-clone-bundle --no-tags --optimized-fetch -j"$(nproc --all)" --fail-fast || {
+            echo "Retrying sync..."
+            sleep 10
+            "$REPO" sync -c --no-clone-bundle --no-tags --optimized-fetch -j"$(nproc --all)" --fail-fast
+          }
+
+      - name: 🔍 Get Kernel Version Info
+        shell: bash
+        run: |
+          set -euo pipefail
+          ARTIFACTS_DIR="$GITHUB_WORKSPACE/artifacts"
+          mkdir -p "$ARTIFACTS_DIR"
+          
+          cd "$CONFIG_DIR/kernel_platform/common"
+          BRANCH_LINE=$(grep '^[[:space:]]*BRANCH=' build.config.common 2>/dev/null || grep '^[[:space:]]*BRANCH=' build.config.constants 2>/dev/null)
+          [[ -z "$BRANCH_LINE" ]] && { echo "❌ No BRANCH found"; exit 1; }
+          
+          BRANCH_VALUE="${BRANCH_LINE#*=}"
+          ANDROID_VERSION="${BRANCH_VALUE%-*}"
+          [[ -z "$ANDROID_VERSION" ]] && { echo "❌ Invalid Android version"; exit 1; }
+          
+          VERSION=$(grep '^VERSION *=' Makefile | awk '{print $3}')
+          PATCHLEVEL=$(grep '^PATCHLEVEL *=' Makefile | awk '{print $3}')
+          SUBLEVEL=$(grep '^SUBLEVEL *=' Makefile | awk '{print $3}')
+          
+          echo "$ANDROID_VERSION-$VERSION.$PATCHLEVEL.$SUBLEVEL" > "${ARTIFACTS_DIR}/${OP_MODEL}.txt"
+          echo "ANDROID_VER=$ANDROID_VERSION" >> $GITHUB_ENV
+          echo "KERNEL_VER=$VERSION.$PATCHLEVEL" >> $GITHUB_ENV
+          echo "KERNEL_FULL_VER=$ANDROID_VERSION-$VERSION.$PATCHLEVEL.$SUBLEVEL" >> $GITHUB_ENV
+          echo "SUSFS_KERNEL_BRANCH=gki-$ANDROID_VERSION-$VERSION.$PATCHLEVEL" >> $GITHUB_ENV
+
+      # ==================== KERNEL BUILD ====================
+      - name: 💾 Setup ccache
+        uses: hendrikmuhs/ccache-action@v1.2.19
+        with:
+          key: ${{ env.CONFIG_DIR }}-kernel-${{ env.KERNEL_FULL_VER }}
+          max-size: 10G
+          append-timestamp: false
+          create-symlink: true
+          evict-old-files: 'job'
+
+      - name: 📥 Clone Dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          ANYKERNEL_BRANCH="gki-2.0"
+          SUSFS_BRANCH="${{ inputs.susfs_branch_or_commit || env.SUSFS_KERNEL_BRANCH }}"
+          
+          git clone --depth=1 https://github.com/TheWildJames/AnyKernel3.git  -b "$ANYKERNEL_BRANCH"
+          git clone --depth=1 https://github.com/TheWildJames/kernel_patches.git 
+          git clone --depth=1 https://github.com/terminal-beginner/kernel_patches.git  my_patches
+          git clone https://gitlab.com/simonpunk/susfs4ksu.git 
+          
+          cd susfs4ksu
+          if git rev-parse --verify "origin/$SUSFS_BRANCH" >/dev/null 2>&1 || git rev-parse --verify "$SUSFS_BRANCH" >/dev/null 2>&1; then
+            git checkout "$SUSFS_BRANCH"
+            echo "✅ SUSFS: $SUSFS_BRANCH"
+          else
+            echo "❌ SUSFS branch '$SUSFS_BRANCH' not found"
+            exit 1
+          fi
+
+      - name: 🧹 Clean ABI Protected Exports
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$CONFIG_DIR/kernel_platform"
+          rm -f common/android/abi_gki_protected_exports_* || true
+          rm -f msm-kernel/android/abi_gki_protected_exports_* || true
+
+      - name: 🛡️ Add Baseband Guard
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$CONFIG_DIR/kernel_platform"
+          wget -O- https://github.com/vc-teahouse/Baseband-guard/raw/main/setup.sh  | bash
+          echo "CONFIG_BBG=y" >> common/arch/arm64/configs/gki_defconfig
+          sed -i '/^config LSM$/,/^help$/{ /^[[:space:]]*default/ { /baseband_guard/! s/lockdown/lockdown,baseband_guard/ } }' common/security/Kconfig
+
+      - name: 🌟 Add KernelSU Next
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$CONFIG_DIR/kernel_platform"
+          if [ "${{ inputs.ksun_branch }}" = "stable" ]; then
+            curl --fail --location --proto '=https' -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh " | bash -
+          else
+            curl --fail --location --proto '=https' -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh " | bash -s "${{ inputs.ksun_branch }}"
+          fi
+          git submodule update --init --recursive
+
+      - name: 🔒 Apply SUSFS Patches
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$CONFIG_DIR/kernel_platform"
+          
+          cp ../../susfs4ksu/kernel_patches/50_add_susfs_in_${{ env.SUSFS_KERNEL_BRANCH }}.patch ./common/
+          cp ../../susfs4ksu/kernel_patches/fs/* ./common/fs/
+          cp ../../susfs4ksu/kernel_patches/include/linux/* ./common/include/linux/
+          
+          cd ./KernelSU-Next
+          susfs_version=$(grep '#define SUSFS_VERSION' ../common/include/linux/susfs.h | awk -F'"' '{print $2}')
+          echo "SUSVER=$susfs_version" >> $GITHUB_ENV
+          
+          case "$susfs_version" in
+            "v1.5.9"|"v1.5.10"|"v1.5.11"|"v1.5.12")
+              cp ../../../susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch ./
+              patch -p1 --forward < 10_enable_susfs_for_ksu.patch || true
+              for file in $(find ./kernel -maxdepth 2 -name "*.rej" -printf "%f\n" 2>/dev/null | cut -d'.' -f1); do
+                [[ -n "$file" ]] && patch -p1 --forward < "../../../kernel_patches/next/susfs_fix_patches/$susfs_version/fix_$file.c.patch" || true
+              done
+              patch -p1 --forward < "../../../kernel_patches/next/susfs_fix_patches/$susfs_version/fix_kernel_compat.c.patch" || true
+              ;;
+            *)
+              echo "❌ Unsupported SUSFS version: $susfs_version"
+              exit 1
+              ;;
+          esac
+          
+          cd ../common
+          if [ "${{ env.ANDROID_VER }}" = "android15" ] && [ "${{ env.KERNEL_VER }}" = "6.6" ]; then
+            if ! grep -qxF '#include <trace/hooks/fs.h>' ./fs/namespace.c; then
+              sed -i '/#include <trace\/hooks\/blk.h>/a #include <trace\/hooks\/fs.h>' ./fs/namespace.c
+            fi
+          fi
+          
+          patch -p1 < 50_add_susfs_in_${{ env.SUSFS_KERNEL_BRANCH }}.patch || true
+
+      - name: 🔧 Apply KSUN Hooks
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$CONFIG_DIR/kernel_platform/common"
+          patch -p1 < ../../../kernel_patches/next/scope_min_manual_hooks_v1.4.patch
+
+      - name: ⚙️ Configure Kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$CONFIG_DIR/kernel_platform"
+          cat >> common/arch/arm64/configs/gki_defconfig <<EOF
+          CONFIG_KSU=y
+          CONFIG_KSU_KPROBES_HOOK=n
+          CONFIG_KSU_SUSFS=y
+          CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y
+          CONFIG_KSU_SUSFS_SUS_PATH=y
+          CONFIG_KSU_SUSFS_SUS_MOUNT=y
+          CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT=y
+          CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT=y
+          CONFIG_KSU_SUSFS_SUS_KSTAT=y
+          CONFIG_KSU_SUSFS_SUS_OVERLAYFS=n
+          CONFIG_KSU_SUSFS_TRY_UMOUNT=y
+          CONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT=y
+          CONFIG_KSU_SUSFS_SPOOF_UNAME=y
+          CONFIG_KSU_SUSFS_ENABLE_LOG=y
+          CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y
+          CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y
+          CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
+          CONFIG_KSU_SUSFS_SUS_MAP=y
+          CONFIG_KSU_SUSFS_SUS_SU=n
+          CONFIG_TMPFS_XATTR=y
+          CONFIG_TMPFS_POSIX_ACL=y
+          CONFIG_TCP_CONG_ADVANCED=y
+          CONFIG_TCP_CONG_BBR=y
+          CONFIG_NET_SCH_FQ=y
+          CONFIG_NET_SCH_FQ_CODEL=y
+          CONFIG_IP_SET=y
+          CONFIG_IP_SET_MAX=65534
+          CONFIG_IP_NF_TARGET_TTL=y
+          CONFIG_IP6_NF_TARGET_HL=y
+          CONFIG_IP6_NF_MATCH_HL=y
+          EOF
+
+      - name: 🏷️ Customize Branding
+        shell: bash
+        run: |
+          set -euo pipefail
+          CUSTOM_LOCALVERSION="-${ANDROID_VER}-${{ inputs.kernel_uname }}"
+          echo "CUSTOM_LOCALVERSION=$CUSTOM_LOCALVERSION" >> $GITHUB_ENV
+
+      - name: 🔍 Detect Clang
+        shell: bash
+        run: |
+          set -euo pipefail
+          KP="$GITHUB_WORKSPACE/$CONFIG_DIR/kernel_platform"
+          
+          for base in "$KP/prebuilts" "$KP/prebuilts-master"; do
+            [ -d "$base/clang/host/linux-x86" ] || continue
+            latest=$(ls -d "$base"/clang/host/linux-x86/clang-r*/ 2>/dev/null | sort -V | tail -n1 || true)
+            if [ -n "$latest" ] && [ -x "$latest/bin/clang" ]; then
+              echo "CLANG_BIN_PATH=$latest/bin" >> $GITHUB_ENV
+              echo "✅ Found clang: $(basename "$latest")"
+              exit 0
+            fi
+          done
+          
+          if command -v clang >/dev/null 2>&1; then
+            echo "CLANG_BIN_PATH=$(dirname "$(command -v clang)")" >> $GITHUB_ENV
+            echo "✅ Using system clang"
+            exit 0
+          fi
+          
+          echo "❌ No clang toolchain found"
+          exit 1
+
+      - name: 🔨 Build Kernel
+        shell: bash
+        env:
+          PYTHONWARNINGS: "ignore:invalid escape sequence"
+        run: |
+          set -euo pipefail
+          COMMON="$GITHUB_WORKSPACE/$CONFIG_DIR/kernel_platform/common"
+          cd "$COMMON"
+          
+          : > "$COMMON/.scmversion"
+          
+          export PATH="${CLANG_BIN_PATH}:/usr/lib/ccache:$PATH"
+          export LLVM=1 LLVM_IAS=1
+          export ARCH=arm64
+          export CC=ccache clang
+          export CROSS_COMPILE=aarch64-linux-android-
+          export CROSS_COMPILE_COMPAT=arm-linux-androideabi-
+          export LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip HOSTCC=clang HOSTCXX=clang++
+          
+          OUT=out
+          mkdir -p "$OUT"
+          
+          make O="$OUT" gki_defconfig
+          
+          if [ -n "${CUSTOM_LOCALVERSION:-}" ]; then
+            scripts/config --file "$OUT/.config" --set-str LOCALVERSION "${CUSTOM_LOCALVERSION}"
+            scripts/config --file "$OUT/.config" -d LOCALVERSION_AUTO || true
+            sed -i 's/scm_version="$(scm_version --short)"/scm_version=""/' scripts/setlocalversion
+          fi
+          
+          if [ "${{ inputs.optimize_level }}" = "O3" ]; then
+            scripts/config --file "$OUT/.config" -d CC_OPTIMIZE_FOR_PERFORMANCE
+            scripts/config --file "$OUT/.config" -e CC_OPTIMIZE_FOR_PERFORMANCE_O3
+            KCFLAGS_EXTRA="-O3"
+          else
+            scripts/config --file "$OUT/.config" -e CC_OPTIMIZE_FOR_PERFORMANCE
+            scripts/config --file "$OUT/.config" -d CC_OPTIMIZE_FOR_PERFORMANCE_O3
+            KCFLAGS_EXTRA="-O2"
+          fi
+          
+          KCFLAGS="-Wno-error -pipe -fno-stack-protector ${KCFLAGS_EXTRA}"
+          KCPPFLAGS="-DCONFIG_OPTIMIZE_INLINING"
+          
+          make O="$OUT" olddefconfig
+          echo "🔥 Starting kernel build with $(nproc --all) threads..."
+          make -j"$(nproc --all)" O="$OUT" KCFLAGS="$KCFLAGS" KCPPFLAGS="$KCPPFLAGS" 2>&1 | tee build.log
+          
+          IMG="$OUT/arch/arm64/boot/Image"
+          [[ -f "$IMG" ]] || { echo "❌ Kernel Image missing!"; exit 1; }
+          sha256sum "$IMG" | tee "$OUT/Image.sha256"
+          file "$IMG"
+          
+          echo "✅ Kernel build successful!"
+
+      - name: 📊 Collect Build Stats
+        id: stats
+        shell: bash
+        run: |
+          set -euo pipefail
+          COMMON="$GITHUB_WORKSPACE/$CONFIG_DIR/kernel_platform/common"
+          OUT="$COMMON/out"
+          ARTIFACTS_DIR="$GITHUB_WORKSPACE/artifacts"
+          IMG="$OUT/arch/arm64/boot/Image"
+          
+          WARNINGS=$(grep -i -E 'warning:' "$COMMON/build.log" | wc -l || true)
+          echo "warnings=$WARNINGS" >> $GITHUB_OUTPUT
+          echo "⚠️ Build warnings: $WARNINGS"
+          
+          KERNEL_UNAME=$(strings "$IMG" | grep -E 'Linux version.*#' | tail -n1 || echo "unknown")
+          echo "KERNEL_UNAME=$KERNEL_UNAME" >> $GITHUB_ENV
+          echo "KERNEL_UNAME=${KERNEL_UNAME}" >> $ARTIFACTS_DIR/kernel_version.txt
+          
+          IMAGE_SHA256=$(sha256sum "$IMG" | cut -d' ' -f1)
+          echo "image_sha256=$IMAGE_SHA256" >> $GITHUB_OUTPUT
+          echo "✅ SHA256: $IMAGE_SHA256"
+
+      - name: 💾 Save Kernel Config
+        shell: bash
+        run: |
+          set -euo pipefail
+          CONFIG_PATH="$GITHUB_WORKSPACE/$CONFIG_DIR/kernel_platform/common/out/.config"
+          ARTIFACTS_DIR="$GITHUB_WORKSPACE/artifacts"
+          [[ -f "$CONFIG_PATH" ]] || { echo "⚠️ Config not found, skipping"; exit 0; }
+          cp "$CONFIG_PATH" "$ARTIFACTS_DIR/gki_defconfig_${{ env.KERNEL_FULL_VER }}"
+
+      - name: 🗜️ Create Kernel ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          IMAGE_PATH="$GITHUB_WORKSPACE/$CONFIG_DIR/kernel_platform/common/out/arch/arm64/boot/Image"
+          ARTIFACTS_DIR="$GITHUB_WORKSPACE/artifacts"
+          [[ -f "$IMAGE_PATH" ]] || { echo "❌ Image not found!"; exit 1; }
+          
+          cp "$IMAGE_PATH" "$GITHUB_WORKSPACE/AnyKernel3/Image"
+          cd "$GITHUB_WORKSPACE/AnyKernel3"
+          sed -i '7 c\kernel.string=Bright-Star Kernel by terminal-beginner' anykernel.sh
+          
+          ZIP_NAME="AnyKernel3_${OP_MODEL}_${{ env.KERNEL_FULL_VER }}_Next_$(date +%Y%m%d_%H%M%S).zip"
+          zip -r "$ARTIFACTS_DIR/$ZIP_NAME" ./* >/dev/null
+          echo "✅ Kernel ZIP: $ZIP_NAME"
+
+      - name: 🥾 Create Boot Image
+        shell: bash
+        run: |
+          set -euo pipefail
+          IMAGE_PATH="$GITHUB_WORKSPACE/$CONFIG_DIR/kernel_platform/common/out/arch/arm64/boot/Image"
+          cd "$GITHUB_WORKSPACE"
+          
+          mkdir -p boot
+          wget -q https://github.com/terminal-beginner/Bright-Star_OnePlus13R/raw/main/tools/boot.zip 
+          unzip -q boot.zip
+          
+          wget -q https://github.com/magojohnji/magiskboot-linux/raw/main/x86_64/magiskboot 
+          chmod +x ./magiskboot
+          
+          BOOT=$(ls *.img 2>/dev/null | head -n1)
+          [[ -n "$BOOT" ]] || { echo "❌ No boot.img found!"; exit 1; }
+          
+          ./magiskboot unpack "$BOOT"
+          [[ -f "kernel" ]] && rm kernel
+          cp "$IMAGE_PATH" kernel
+          ./magiskboot repack "$BOOT"
+          
+          [[ -f "new-boot.img" ]] || { echo "❌ Repacked boot not found!"; exit 1; }
+          mv new-boot.img "Bright-Star_${OP_MODEL}_boot.img"
+          cp "Bright-Star_${OP_MODEL}_boot.img" "$GITHUB_WORKSPACE/artifacts/"
+          
+          echo "✅ Boot image created"
+
+      # ==================== MODULE BUILD ====================
+      - name: 📦 Add NetHunter Module Configs
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$CONFIG_DIR/kernel_platform/msm-kernel"
+          cat >> arch/arm64/configs/gki_defconfig <<EOF
+          CONFIG_BT_HCIBTUSB=m
+          CONFIG_BT_HCIBTUSB_BCM=m
+          CONFIG_BT_HCIBTUSB_RTL=m
+          CONFIG_BT_HCIVHCI=m
+          CONFIG_BT_HCIBCM203X=m
+          CONFIG_BT_HCIBPA10X=m
+          CONFIG_BT_HCIBFUSB=m
+          CONFIG_USB_AIRSPY=m
+          CONFIG_USB_HACKRF=m
+          CONFIG_CAN=m
+          CONFIG_CAN_DEV=m
+          CONFIG_CAN_CALC_BITTIMING=m
+          CONFIG_CAN_LEDS=m
+          CONFIG_CAN_VCAN=m
+          CONFIG_CAN_GRCAN=m
+          CONFIG_CAN_XILINXCAN=m
+          CONFIG_CAN_C_CAN=m
+          CONFIG_CAN_C_CAN_PLATFORM=m
+          CONFIG_CAN_C_CAN_PCI=m
+          CONFIG_CAN_CC770=m
+          CONFIG_CAN_CC770_ISA=m
+          CONFIG_CAN_CC770_PLATFORM=m
+          CONFIG_CAN_M_CAN=m
+          CONFIG_CAN_M_CAN_PCI=m
+          CONFIG_CAN_M_CAN_PLATFORM=m
+          CONFIG_CAN_M_CAN_TCAN4X5X=m
+          CONFIG_CAN_HI311X=m
+          CONFIG_CAN_MCP251X=m
+          CONFIG_CAN_8DEV_USB=m
+          CONFIG_CAN_EMS_USB=m
+          CONFIG_CAN_ESD_USB2=m
+          CONFIG_CAN_GS_USB=m
+          CONFIG_CAN_KVASER_USB=m
+          CONFIG_CAN_PEAK_USB=m
+          CONFIG_NETLINK_DIAG=m
+          CONFIG_VSOCKETS=m
+          CONFIG_NET_SCHED=m
+          CONFIG_NET_EMATCH_CANID=m
+          CONFIG_USB_SERIAL=m
+          CONFIG_USB_SERIAL_CONSOLE=m
+          CONFIG_USB_SERIAL_GENERIC=m
+          CONFIG_USB_SERIAL_CH341=m
+          CONFIG_USB_SERIAL_FTDI_SIO=m
+          CONFIG_USB_SERIAL_PL2303=m
+          CONFIG_WLAN_VENDOR_REALTEK=m
+          CONFIG_WLAN_VENDOR_ATH=m
+          CONFIG_ATH_COMMON=m
+          CONFIG_ATH9K=m
+          CONFIG_ATH9K_HW=m
+          CONFIG_ATH9K_HTC=m
+          CONFIG_ATH9K_COMMON=m
+          CONFIG_ATH10K=m
+          CONFIG_ATH10K_USB=m
+          CONFIG_ATH11K=m
+          CONFIG_WLAN_VENDOR_MEDIATEK=m
+          CONFIG_MT7601U=m
+          CONFIG_MT76_CORE=m
+          CONFIG_MT76_USB=m
+          CONFIG_MT76x02_LIB=m
+          CONFIG_MT76x02_USB=m
+          CONFIG_MT76_CONNAC_LIB=m
+          CONFIG_MT7603E=m
+          CONFIG_MT76x2_COMMON=m
+          CONFIG_MT76x0_COMMON=m
+          CONFIG_MT7615_COMMON=m
+          CONFIG_MT7915E=m
+          CONFIG_MT7921E=m
+          CONFIG_MAC80211_LEDS=m
+          CONFIG_CAN_SLCAN=m
+          EOF
+
+      - name: 🔧 Add MemKernel Module
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$CONFIG_DIR/kernel_platform/msm-kernel"
+          curl -LSs "https://raw.githubusercontent.com/Poko-Apps/MemKernel/main/kernel/setup.sh " | bash -s M Bright-Star
+
+      - name: 📶 Add rtw88 Modules
+        shell: bash
+        run: |
+          set -euo pipefail
+          KERNEL_PATH="$GITHUB_WORKSPACE/$CONFIG_DIR/kernel_platform"
+          MSM="$KERNEL_PATH/msm-kernel"
+          cd "$MSM/drivers/net/wireless/realtek/"
+          rm -rf rtw88
+          git clone https://github.com/lwfinger/rtw88.git 
+          sed -i 's/$(CONFIG_RTW88)/m/g' Makefile
+          sed -i '/^source "drivers\/net\/wireless\/realtek\/rtw88\/Kconfig"$/s/.*/ /' Kconfig
+
+      - name: 🔨 Build Kernel Modules
+        shell: bash
+        run: |
+          set -euo pipefail
+          KERNEL_PLATFORM="$GITHUB_WORKSPACE/$CONFIG_DIR/kernel_platform"
+          MSM="$KERNEL_PLATFORM/msm-kernel"
+          OUT=out
+          
+          export PATH="${CLANG_BIN_PATH}:/usr/lib/ccache:$PATH"
+          export LLVM=1
+          export ARCH=arm64
+          
+          cd "$MSM"
+          
+          if [ -f "arch/arm64/configs/vendor/pineapple_GKI.config" ]; then
+            cat arch/arm64/configs/vendor/pineapple_GKI.config >> ./arch/arm64/configs/gki_defconfig
+          fi
+          
+          echo "CONFIG_LTO_CLANG_THIN=y" >> ./arch/arm64/configs/gki_defconfig
+          echo "CONFIG_LTO_CLANG=y" >> ./arch/arm64/configs/gki_defconfig
+          
+          INSTALL_MOD_PATH="$GITHUB_WORKSPACE/$CONFIG_DIR/msm_modules"
+          
+          make ARCH=arm64 LLVM=1 O=out gki_defconfig
+          make -j$(nproc --all) ARCH=arm64 LLVM=1 O=out CC="ccache clang" modules
+          make -j$(nproc --all) ARCH=arm64 LLVM=1 O=out INSTALL_MOD_PATH="$INSTALL_MOD_PATH" modules_install
+          
+          echo "✅ Modules built"
+
+      - name: 📦 Collect & Package Modules
+        shell: bash
+        run: |
+          set -euo pipefail
+          ARTIFACTS_DIR="$GITHUB_WORKSPACE/artifacts"
+          UNIFIED_MODULES="$GITHUB_WORKSPACE/all_modules"
+          mkdir -p "$UNIFIED_MODULES"
+          
+          if [ -d "$GITHUB_WORKSPACE/$CONFIG_DIR/msm_modules" ]; then
+            find "$GITHUB_WORKSPACE/$CONFIG_DIR/msm_modules" -name "*.ko" -exec cp -f {} "$UNIFIED_MODULES/" \;
+          fi
+          
+          cd "$CONFIG_DIR/kernel_platform/common"
+          make O=out INSTALL_MOD_PATH="$GITHUB_WORKSPACE/$CONFIG_DIR/common_modules" modules_install
+          
+          if [ -d "$GITHUB_WORKSPACE/$CONFIG_DIR/common_modules" ]; then
+            find "$GITHUB_WORKSPACE/$CONFIG_DIR/common_modules" -name "*.ko" -exec cp -n {} "$UNIFIED_MODULES/" \;
+          fi
+          
+          cd "$UNIFIED_MODULES"
+          curl -L -o default_modules.txt https://raw.githubusercontent.com/terminal-beginner/kernel_patches/refs/heads/main/default_modules.txt 
+          while IFS= read -r module; do
+            [[ -n "$module" ]] && rm -f "$module" 2>/dev/null || true
+          done < default_modules.txt
+          
+          MODULE_COUNT=$(find . -name "*.ko" | wc -l)
+          echo "📦 Packaging $MODULE_COUNT modules..."
+          
+          MODULES_ZIP="kernel_modules_${OP_MODEL}_unified.zip"
+          find . -name "*.ko" -print0 | xargs -0 zip -j "$ARTIFACTS_DIR/$MODULES_ZIP"
+          
+          echo "✅ Modules ZIP: $MODULES_ZIP"
+
+      # ==================== RELEASE PHASE ====================
+      - name: 📤 Upload All Artifacts
+        uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: bright-star-kernel-${{ env.CONFIG_DIR }}
+          path: ${{ github.workspace }}/artifacts/
+          retention-days: 90
+
+  release:
+    needs: build-and-release
+    runs-on: ubuntu-latest
+    if: ${{ inputs.release_type != 'none' }}
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: ⬇️ Checkout for Release
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 📡 Download Wireless Firmware
+        run: |
+          set -euo pipefail
+          DOWNLOAD_DIR="./downloaded-artifacts/wireless-firmware"
+          mkdir -p "$DOWNLOAD_DIR"
+          
+          LATEST_TAG=$(gh api repos/terminal-beginner/Nethunter-Wireless-Firmware/releases/latest --jq '.tag_name' 2>/dev/null || true)
+          [[ -z "$LATEST_TAG" ]] && { echo "::warning::No firmware release found"; exit 0; }
+          
+          ASSET="Nethunter-Wireless-Firmware-${LATEST_TAG}.zip"
+          echo "📡 Downloading $ASSET..."
+          gh release download "$LATEST_TAG" --repo terminal-beginner/Nethunter-Wireless-Firmware --pattern "$ASSET" --dir "$DOWNLOAD_DIR" --clobber
+
+      - name: 🏷️ Generate Release Tag
+        run: |
+          set -euo pipefail
+          BASE="v${{ inputs.kernel_version }}"
+          LATEST=$(gh api repos/${{ github.repository }}/tags --jq '.[0].name' 2>/dev/null || echo "")
+          
+          if [[ "$LATEST" =~ ^${BASE}-r[0-9]+$ ]]; then
+            SUFFIX=$(echo "$LATEST" | grep -oE 'r[0-9]+$' | grep -oE '[0-9]+')
+            NEW_SUFFIX=$((SUFFIX + 1))
+          else
+            NEW_SUFFIX=1
+          fi
+          
+          NEW_TAG="${BASE}-r${NEW_SUFFIX}"
+          echo "NEW_TAG=$NEW_TAG" >> $GITHUB_ENV
+          git tag "$NEW_TAG"
+          git push origin "$NEW_TAG"
+
+      - name: ⬇️ Download Build Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: bright-star-kernel-OP13R
+          path: ./downloaded-artifacts/
+
+      - name: 📝 Generate Release Notes
+        run: |
+          set -euo pipefail
+          OS_VER=$(echo "${{ inputs.manifest }}" | sed 's/FAST_BUILD_//' | tr '[:lower:]' '[:upper:]')
+          
+          cat > release_notes.md <<EOF
+          ## 🌟 Bright-Star Kernel for OnePlus 13R - $OS_VER
+            
+          **📄 Manifest:** ${{ inputs.manifest }}  
+          **⚡ Optimization:** ${{ inputs.optimize_level }}  
+          **🌳 KernelSU Next:** ${{ inputs.ksun_branch }}  
+          **🔒 SUSFS:** v${{ inputs.kernel_version }}
+          
+          ### 📥 Downloads
+          - **Kernel ZIP**: Flashable via recovery (AnyKernel3)
+          - **Boot IMG**: Pre-patched boot image
+          - **Modules ZIP**: Unified kernel modules for NetHunter
+          - **Wireless Firmware**: External firmware package
+          
+          ### ✨ Features
+          - ✅ KernelSU-Next / WildKSU Manager Support
+          - ✅ SUSFS v${{ inputs.kernel_version }} + Magic Mount
+          - ✅ NetHunter Support (WiFi injection, HID, etc.)
+          - ✅ Baseband Guard (BBG) - Security enhancement
+          - ✅ BBR v1 TCP Congestion Control
+          - ✅ MemKernel driver (physical memory R/W)
+          - ✅ IP Set Support
+          - ✅ rtw88 wireless drivers
+          - ✅ CAN bus support
+          
+          ### 📱 Device
+          - **Model:** OnePlus 13R
+          - **SoC:** Snapdragon 8 Gen 3 (SM8650)
+          - **Android:** $OS_VER
+          
+          ### 🔧 Installation
+          1. Flash kernel ZIP via custom recovery (TWRP/Ofox)
+          2. Flash modules ZIP via KernelSU manager
+          3. Install wireless firmware via Magisk/KSU module
+          
+          ### ⚠️ Notes
+          - Built with ${{ inputs.optimize_level }} optimization
+          - Includes SUSFS v${{ inputs.kernel_version }} support
+          - Compatible with KernelSU Next managers
+          EOF
+
+      - name: 🚀 Create GitHub Release
+        run: |
+          set -euo pipefail
+          OS_VER=$(echo "${{ inputs.manifest }}" | sed 's/FAST_BUILD_//' | tr '[:lower:]' '[:upper:]')
+          TITLE="Bright-Star Kernel (${{ inputs.kernel_uname }}) - $OS_VER"
+          
+          [[ "${{ inputs.release_type }}" == "Pre-release" ]] && IS_PRERELEASE="--prerelease" || IS_PRERELEASE=""
+          
+          gh release create "${{ env.NEW_TAG }}" \
+            --repo "${{ github.repository }}" \
+            --title "$TITLE" \
+            --notes-file release_notes.md \
+            $IS_PRERELEASE
+
+      - name: ⬆️ Upload Release Assets
+        run: |
+          set -euo pipefail
+          for file in ./downloaded-artifacts/*.{zip,img} ./downloaded-artifacts/wireless-firmware/*.zip 2>/dev/null; do
+            [[ -f "$file" ]] || continue
+            echo "⬆️ Uploading $(basename "$file")..."
+            gh release upload "${{ env.NEW_TAG }}" "$file" --clobber
+          done
+
+
+workflow show nahi kar raha hai run karne ke liye
