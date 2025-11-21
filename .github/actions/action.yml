@@ -844,8 +844,8 @@ runs:
         echo -n "Repacking boot image..."
         $MAGISKBOOT repack $BOOT
         
-        mv -f new-boot.img EmberHeart_boot.img
-        cp EmberHeart_boot.img "$CONFIG_DIR/artifacts/"     
+        mv -f new-boot.img Bright-Star_boot.img
+        cp Bright-Star_boot.img "$CONFIG_DIR/artifacts/"     
 
     - name: Final Build Summary
       shell: bash
