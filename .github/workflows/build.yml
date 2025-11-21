@@ -59,7 +59,7 @@ jobs:
     timeout-minutes: 240
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      CONFIG_DIR: "OP13R"
+      CONFIG_DIR: "OP13r"
     steps:
       # ==================== SETUP PHASE ====================
       - name: ⬇️ Checkout Repository
