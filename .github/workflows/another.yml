@@ -1,10 +1,10 @@
-name: Build OnePlus 13R Bright-Star Kernel and Modules
+- name: Build OnePlus 13R Bright-Star Kernel and Modules
 
-permissions:
+  permissions:
   contents: write
   actions: write
 
-inputs:
+  inputs:
   op_config_json:
     description: 'JSON string containing full device config'
     required: true
