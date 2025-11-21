@@ -35,7 +35,7 @@
     type: string
     default: OOS15
 
-outputs:
+  outputs:
   kernel_version:
     value: ${{ steps.save_metadata.outputs.kernel_version }}
   ksu_version:
