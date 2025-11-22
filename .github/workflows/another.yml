@@ -381,7 +381,7 @@ runs:
 
         # Ubuntu Chroot support
         cat >> common/arch/arm64/configs/gki_defconfig << 'EOF'
-# Core Namespace Support
+        # Core Namespace Support
         CONFIG_NAMESPACES=y
         CONFIG_PID_NS=y
         CONFIG_UTS_NS=y
@@ -460,8 +460,8 @@ runs:
 
         # Build optimization
         cat >> common/arch/arm64/configs/gki_defconfig << 'EOF'
-# CONFIG_LTO_CLANG_THIN is not set
-# CONFIG_LTO_CLANG is not set
+        # CONFIG_LTO_CLANG_THIN is not set
+        # CONFIG_LTO_CLANG is not set
         CONFIG_LTO_NONE=y
         CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y
         CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE_O3=n
