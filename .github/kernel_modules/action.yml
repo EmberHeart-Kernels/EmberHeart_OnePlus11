@@ -86,7 +86,6 @@ runs:
         echo "Input validation OK."
         echo "::endgroup::"
 
-
     - name: Install Minimal Dependencies
       shell: bash
       run: |
@@ -179,7 +178,6 @@ runs:
         echo "KERNEL_FULL_VER=$ANDROID_VERSION-$FULL_VERSION" >> "$GITHUB_ENV"
         echo "SUSFS_KERNEL_BRANCH=gki-$ANDROID_VERSION-$VERSION.$PATCHLEVEL" >> "$GITHUB_ENV"
 
-
     - name: Setup ccache
       uses: hendrikmuhs/ccache-action@v1.2.19
       with:
@@ -198,15 +196,14 @@ runs:
         rm -f msm-kernel/android/abi_gki_protected_exports_* || true
         df -h
 
-    - name: Add nethunter specfic drivers already present in kernel to be built as modules
+    - name: Add nethunter specific drivers already present in kernel to be built as modules
       shell: bash
       run: |
         set -euo pipefail
         KERNEL_PATH="$GITHUB_WORKSPACE/$CONFIG/kernel_platform"
         MSM="$KERNEL_PATH/msm-kernel"
         cd "$MSM"
-        cat >> arch/arm64/configs/gki_defconfig <<EOF
-
+        cat >> arch/arm64/configs/gki_defconfig << 'EOF'
         CONFIG_WLAN_VENDOR_REALTEK=y
 
         CONFIG_WLAN_VENDOR_ATH=y
@@ -243,7 +240,7 @@ runs:
         CONFIG_MAC80211_LEDS=m
 
         CONFIG_CAN_SLCAN=m
-        EOF
+EOF
 
     - name: Add memkernel module
       shell: bash
@@ -301,7 +298,6 @@ runs:
         export PATH="${CLANG_BIN_PATH}:$PATH" 
         export PATH="/usr/lib/ccache:$PATH"
         
-        
         cd "$MSM"
 
         # Merge defconfig fragments from vendor/kalama_GKI.config
@@ -319,15 +315,22 @@ runs:
         make ARCH=arm64 LLVM=1 O=out gki_defconfig   
         make -j$(nproc --all) ARCH=arm64 LLVM=1 O=out CC="ccache clang" modules       
         make -j$(nproc --all) ARCH=arm64 LLVM=1 O=out INSTALL_MOD_PATH=$INSTALL_MOD_PATH modules_install
+
+    - name: Save MSM Kernel Config
+      shell: bash
+      run: |
+        set -euo pipefail
+        CONFIG_DIR="$GITHUB_WORKSPACE/$CONFIG"
+        ARTIFACTS_DIR="$CONFIG_DIR/artifacts"
+        KERNEL_CONFIG_PATH="$CONFIG_DIR/kernel_platform/msm-kernel/out/.config"
         
-        echo "Building out of tree external kernel modules..."
-        #cd "$KERNEL_PLATFORM"
-        #QCA_WLAN_DIR="$GITHUB_WORKSPACE/$CONFIG/vendor/qcom/opensource/wlan/qcacld-3.0/"
-        
-        #cd "$MSM"
-        #make -C ../../vendor/qcom/opensource/datarmnet-ext/aps M=../../vendor/qcom/opensource/datarmnet-ext/aps KERNEL_SRC=$KERNEL_PLATFORM/./msm-kernel O=$OUT LLVM=1 DEPMOD=depmod DTC=$KERNEL_PLATFORM/build/kernel/build-tools/path/linux-x86/dtc RMNET_CORE_INC_DIR=$CONFIG/vendor/qcom/opensource/datarmnet/core RMNET_CORE_PATH=vendor/qcom/opensource/datarmnet/core DATARMNET_CORE_PATH=datarmnet/core ANDROID_BUILD_TOP=$CONFIG KBUILD_MIXED_TREE=..//device/qcom/kalama-kernel
-        
-        #make -C ../../vendor/qcom/opensource/wlan/platform M=../../vendor/qcom/opensource/wlan/platform KERNEL_SRC=$KERNEL_PLATFORM/./msm-kernel O=$OUT LLVM=1 DEPMOD=depmod DTC=$KERNEL_PLATFORM/build/kernel/build-tools/path/linux-x86/dtc WLAN_PLATFORM_ROOT=$CONFIG/vendor/qcom/opensource/wlan/platform HAVE_ARCH_COMPILER_H=y CONFIG_CNSS_OUT_OF_TREE=y CONFIG_CNSS2=m CONFIG_CNSS2_QMI=y CONFIG_CNSS_QMI_SVC=m CONFIG_CNSS_PLAT_IPC_QMI_SVC=m CONFIG_CNSS_GENL=m CONFIG_WCNSS_MEM_PRE_ALLOC=m CONFIG_CNSS_UTILS=m CONFIG_BUS_AUTO_SUSPEND=y CONFIG_CNSS_HW_SECURE_DISABLE=y KERNEL_SUPPORTS_NESTED_COMPOSITES=n KBUILD_EXTRA_SYMBOLS=$OUT/sec-module-symvers_intermediates/Module.symvers ANDROID_BUILD_TOP=$CONFIG KBUILD_MIXED_TREE=..//device/qcom/kalama-kernel
+        if [ -f "$KERNEL_CONFIG_PATH" ]; then
+          CONFIG_FILENAME="msm_gki_defconfig_${{ env.KERNEL_FULL_VER }}"
+          cp "$KERNEL_CONFIG_PATH" "$ARTIFACTS_DIR/$CONFIG_FILENAME"
+          echo "✅ MSM Kernel config saved: $CONFIG_FILENAME"
+        else
+          echo "⚠️ WARNING: MSM Kernel config not found at $KERNEL_CONFIG_PATH"
+        fi
         
     - name: Filter modules
       shell: bash
@@ -359,41 +362,6 @@ runs:
         cd ..
         echo "Modules remaining after filtering: $(find modules -type f -name '*.ko' | wc -l)"
 
-    - name: Combine Common and MSM Kernel Modules
-      shell: bash
-      run: |
-        set -euo pipefail
-        CONFIG_DIR="$GITHUB_WORKSPACE/$CONFIG"
-        KERNEL_PLATFORM="$CONFIG_DIR/kernel_platform"
-    
-        # Source directories
-        COMMON_MODULES_DIR="$CONFIG_DIR/artifacts/common_modules"
-        MSM_MODULES_DIR="$KERNEL_PLATFORM/msm-kernel/out/modules"
-        COMBINED_MODULES_DIR="$CONFIG_DIR/artifacts/combined_modules"
-    
-        mkdir -p "$COMBINED_MODULES_DIR"
-    
-        echo "Combining modules from common and msm-kernel..."
-    
-        # Copy common kernel modules
-        if [ -d "$COMMON_MODULES_DIR" ] && [ "$(find "$COMMON_MODULES_DIR" -name '*.ko' | wc -l)" -gt 0 ]; then
-           echo "Copying common kernel modules..."
-           find "$COMMON_MODULES_DIR" -name "*.ko" -exec cp {} "$COMBINED_MODULES_DIR/" \;
-         else
-         echo "Warning: No common modules found or directory doesn't exist"
-        fi
-    
-        # Copy msm-kernel modules
-        if [ -d "$MSM_MODULES_DIR" ] && [ "$(find "$MSM_MODULES_DIR" -name '*.ko' | wc -l)" -gt 0 ]; then
-         echo "Copying msm-kernel modules..."
-         find "$MSM_MODULES_DIR" -name "*.ko" -exec cp {} "$COMBINED_MODULES_DIR/" \;
-        else
-          echo "Warning: No msm-kernel modules found or directory doesn't exist"
-        fi
-    
-        echo "Total combined modules: $(find "$COMBINED_MODULES_DIR" -name "*.ko" | wc -l)"
-        ls -la "$COMBINED_MODULES_DIR/" | head -20
-        
     - name: Create Kernel Modules zip
       id: create_zip
       shell: bash
@@ -404,7 +372,7 @@ runs:
         MSM="$KERNEL_PLATFORM/msm-kernel"
         OUT="$MSM/out"
         MODULES_SRC="$OUT/modules"
-        MODULES_ZIP="$CONFIG_DIR/artifacts/kernel_modules_${{ inputs.model }}.zip"
+        MODULES_ZIP="$CONFIG_DIR/artifacts/kernel_modules_${OP_MODEL}.zip"
         mkdir -p "$CONFIG_DIR/artifacts"
         find "$MODULES_SRC" -type f -name '*.ko' -print0 | xargs -0 zip -j "$MODULES_ZIP"
         echo "Packaged kernel modules to $MODULES_ZIP"
@@ -413,12 +381,19 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        {
-          echo "CCache Statistics :"
-          echo "$(/usr/bin/ccache -s)"
-        } | tee summary.txt
+        CONFIG_DIR="$GITHUB_WORKSPACE/$CONFIG"
+        MSM_MODULES_COUNT=0
+        if [ -d "$CONFIG_DIR/kernel_platform/msm-kernel/out/modules" ]; then
+          MSM_MODULES_COUNT=$(find "$CONFIG_DIR/kernel_platform/msm-kernel/out/modules" -name "*.ko" | wc -l)
+        fi
+        
         {
           echo "### Kernel Modules Build Summary"
+          echo ""
+          echo "- MSM Kernel Modules: $MSM_MODULES_COUNT"
+          echo "- Model: ${OP_MODEL}"
+          echo "- Android: ${{ env.ANDROID_VER }}"
+          echo "- Kernel Version: ${{ env.KERNEL_FULL_VER }}"
           echo ""
           echo "CCache Statistics :"
           echo "$(ccache -s -v)"
@@ -429,9 +404,9 @@ runs:
       run: |
         set -euo pipefail
         echo "Deleting old ccache..."
-        gh cache delete ccache-${{ env.CONFIG }}-kernel-${{ env.KERNEL_FULL_VER }}- || true
+        gh cache delete ccache-${{ env.CONFIG }}-modules-${{ env.KERNEL_FULL_VER }}- || true
 
-    - name: Upload Kernel Modules zip
+    - name: Upload Artifacts
       if: success() && steps.create_zip.conclusion == 'success'
       uses: actions/upload-artifact@v4
       with:
