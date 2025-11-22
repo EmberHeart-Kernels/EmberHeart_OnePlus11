@@ -1,4 +1,4 @@
-name: Build and Release OnePlus 13R Bright-Star Kernel and Kernel Modules
+name: Build and Release OnePlus 13R Bright-Star Kernel
 
 permissions:
   contents: write
@@ -44,6 +44,10 @@ on:
         description: 'Enter SusFS Branch or commit hash for android14-6.1'
         type: string
         default: ''
+      build_modules:
+        description: 'Build kernel modules'
+        type: boolean
+        default: true
 
 jobs:
   set-op-model:
@@ -51,7 +55,7 @@ jobs:
     outputs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
     steps:
-      - name: Checkout Code (to access configs/)
+      - name: Checkout Code
         uses: actions/checkout@v4
         with:
           sparse-checkout: |
@@ -88,9 +92,7 @@ jobs:
           echo "]" >> matrix.json
         
           input="OP13r"
-          jq_filter="."
           jq_filter="map(select(.model == \"$input\"))"
-        
           filtered=$(jq -c "$jq_filter" matrix.json)
           wrapped=$(jq -n --argjson items "$filtered" '{ include: $items }')
         
@@ -98,8 +100,8 @@ jobs:
           echo "$wrapped" >> "$GITHUB_OUTPUT"
           echo "MATRIX_EOF" >> "$GITHUB_OUTPUT"
 
-  build-kernel:
-    name: Build OP13R Bright-Star kernel
+  build-kernel-and-modules:
+    name: Build OP13R Bright-Star Kernel and Modules
     needs: set-op-model
     runs-on: ubuntu-latest
     env:
@@ -116,8 +118,8 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: Build Kernel
-        uses: ./.github/actions
+      - name: Build Kernel and Modules
+        uses: ./.github/actions/build-kernel-and-modules
         with:
           op_config_json: ${{ toJSON(matrix) }}
           ksun_branch: ${{ inputs.ksun_branch }}
@@ -125,35 +127,11 @@ jobs:
           optimize_level: ${{ inputs.optimize_level }}
           kernel_uname: ${{ inputs.kernel_uname }}
           manifest: ${{ inputs.manifest }}
-          
-  build-kernel-modules:
-    name: Build Kernel Modules
-    needs: set-op-model
-    runs-on: ubuntu-latest
-    env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
-      CCACHE_NOHASHDIR: "true"
-      CCACHE_HARDLINK: "true"
-    strategy:
-      fail-fast: false
-      matrix: ${{ fromJSON(needs.set-op-model.outputs.matrix) }}
-    steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
-
-      - name: Build Kernel Modules
-        uses: ./.github/kernel_modules
-        with:
-          op_config_json: ${{ toJSON(matrix) }}
-          manifest: ${{ inputs.manifest }}
+          build_modules: ${{ inputs.build_modules }}
 
   trigger-release:
     needs:
-      - build-kernel
-      - build-kernel-modules
+      - build-kernel-and-modules
     runs-on: ubuntu-latest
     if: ${{ inputs.release_type != 'none' }}
     env:
@@ -161,34 +139,29 @@ jobs:
       REPO_NAME: ${{ github.event.repository.name }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       RELEASE_NAME: 'OnePlus 13R Bright-Star Kernel With KernelSU Next, Nethunter & SUSFS v1.5.12'
-      OS_VERSION: $(grep -o 'oos[0-9]\+' <<< "${{ inputs.manifest }}")
+      OS_VERSION: $(echo ${{ inputs.manifest }} | tr '[:upper:]' '[:lower:]')
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
           
-      - name: Download Wirless Firmware Module for Nethunter 
+      - name: Download Wireless Firmware for Nethunter 
         id: download_external
         env:
           SOURCE_REPO: terminal-beginner/Nethunter-Wireless-Firmware 
         run: |
           echo "--- Downloading Latest Release Asset from $SOURCE_REPO ---"
-          
           DOWNLOAD_DIR="./downloaded-artifacts/wireless-firmware"
           mkdir -p "$DOWNLOAD_DIR"
           
-          LATEST_RELEASE_TAG=$(gh api \
-            repos/$SOURCE_REPO/releases/latest \
-            --jq '.tag_name')
-
+          LATEST_RELEASE_TAG=$(gh api repos/$SOURCE_REPO/releases/latest --jq '.tag_name')
           if [ -z "$LATEST_RELEASE_TAG" ]; then
-            echo "::warning::Could not find a latest release in $SOURCE_REPO. Skipping external download."
+            echo "::warning::Could not find latest release in $SOURCE_REPO. Skipping external download."
             exit 0
           fi
           
           echo "Found latest release tag: $LATEST_RELEASE_TAG"
-          
           SOURCE_REPO_NAME=$(basename $SOURCE_REPO)
           EXPECTED_ASSET_NAME="${SOURCE_REPO_NAME}-${LATEST_RELEASE_TAG}.zip"
 
@@ -203,13 +176,21 @@ jobs:
       - name: Generate and Create New Tag
         run: |
           BASE_TAG="v1.5.12-r0"
-          LATEST_TAG=$(gh api repos/$REPO_OWNER/$REPO_NAME/tags --jq '.[0].name')
-          if [ -z "$LATEST_TAG" ]; then
+          LATEST_TAG=$(gh api repos/$REPO_OWNER/$REPO_NAME/tags --jq '.[0].name' 2>/dev/null || echo "$BASE_TAG")
+          if [ -z "$LATEST_TAG" ] || [ "$LATEST_TAG" = "null" ]; then
             LATEST_TAG="$BASE_TAG"
-          else
-            LATEST_TAG=$(printf "%s\n%s\n" "$LATEST_TAG" "$BASE_TAG" | sort -rV | head -n1)
           fi
-          NEW_TAG=$(echo "$LATEST_TAG" | awk -F'-r' '{suffix=$2; if (!suffix) suffix=0; suffix++; printf "%s-r%d", $1, suffix}')
+          
+          # Extract version and increment
+          if [[ $LATEST_TAG =~ (.*-r)([0-9]+) ]]; then
+            PREFIX="${BASH_REMATCH[1]}"
+            CURRENT_NUM="${BASH_REMATCH[2]}"
+            NEW_NUM=$((CURRENT_NUM + 1))
+            NEW_TAG="${PREFIX}${NEW_NUM}"
+          else
+            NEW_TAG="${LATEST_TAG}-r1"
+          fi
+          
           echo "New tag: $NEW_TAG"
           echo "NEW_TAG=${NEW_TAG}" >> $GITHUB_ENV
           git tag $NEW_TAG
@@ -220,12 +201,11 @@ jobs:
         with:
           path: ./downloaded-artifacts
           
-      
       - name: Generate Device List and Final Release Notes
         id: generate-notes
         run: |
-          echo "=== Start building the release notes ==="
-          cat << EOF > release_notes.md
+          echo "=== Building release notes ==="
+          cat << 'EOF' > release_notes.md
           This release contains KernelSU Next and SUSFS v1.5.12
           
           Module: 
@@ -239,8 +219,8 @@ jobs:
           
           ### Built Devices
           
-          | Model | Kernel Version |
-          |-------|----------------|
+          | Model | Kernel Version | Modules Built |
+          |-------|----------------|---------------|
           EOF
           
           # Generate table rows
@@ -248,11 +228,11 @@ jobs:
             if [ -n "$file" ]; then
               model=$(basename "$file" .txt)
               version=$(cat "$file")
-              printf "| %-12s | %-16s |\n" "$model" "$version" >> release_notes.md
+              modules_built="${{ inputs.build_modules }}"
+              printf "| %-12s | %-16s | %-13s |\n" "$model" "$version" "$modules_built" >> release_notes.md
             fi
           done
           
-          # Add features and finalize
           cat << 'EOF' >> release_notes.md
           
           ### Features
@@ -268,19 +248,22 @@ jobs:
           - [+] Nethunter Support
           - [+] Mem kernel driver by @Poko-Apps [r/w to physical memory]
           - [+] IP Set Support
+          - [+] Additional Wireless Drivers
+
+          ### Build Info
+          - Optimization Level: ${{ inputs.optimize_level }}
+          - KernelSU Branch: ${{ inputs.ksun_branch }}
+          - Modules Built: ${{ inputs.build_modules }}
+          - Android Version: ${{ inputs.manifest }}
 
           EOF
-          
-          # Output for debugging
-          echo "--- Final Release Notes ---"
-          cat release_notes.md
 
       - name: Create GitHub Pre-release
         if: ${{ inputs.release_type == 'Pre-release' }}
         run: |
           gh release create "${{ env.NEW_TAG }}" \
             --repo "${{ env.REPO_OWNER }}/${{ env.REPO_NAME }}" \
-            --title "*Test-build*-${{ env.RELEASE_NAME }}-${{ env.OS_VERSION }}*Test Build*" \
+            --title "*Test-build*-${{ env.RELEASE_NAME }}-${{ env.OS_VERSION }}*" \
             --notes-file release_notes.md \
             --prerelease
        
@@ -292,7 +275,7 @@ jobs:
             --title "${{ env.RELEASE_NAME }}-${{ env.OS_VERSION }}" \
             --notes-file release_notes.md
 
-      - name: Upload Release Assets Dynamically
+      - name: Upload Release Assets
         run: |
           for file in ./downloaded-artifacts/*/*.{zip,img}; do
             if [ -f "$file" ]; then
@@ -300,3 +283,13 @@ jobs:
               gh release upload "${{ env.NEW_TAG }}" "$file" --clobber
             fi
           done
+          
+          # Upload wireless firmware if downloaded
+          if [ -d "./downloaded-artifacts/wireless-firmware" ]; then
+            for file in ./downloaded-artifacts/wireless-firmware/*.zip; do
+              if [ -f "$file" ]; then
+                echo "Uploading wireless firmware: $file"
+                gh release upload "${{ env.NEW_TAG }}" "$file" --clobber
+              fi
+            done
+          fi
