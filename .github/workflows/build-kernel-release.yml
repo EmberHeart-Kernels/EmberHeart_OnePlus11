@@ -148,6 +148,7 @@ jobs:
         uses: ./.github/kernel_modules
         with:
           op_config_json: ${{ toJSON(matrix) }}
+          optimize_level: ${{ inputs.optimize_level }}
           manifest: ${{ inputs.manifest }}
 
   trigger-release:
@@ -161,14 +162,13 @@ jobs:
       REPO_NAME: ${{ github.event.repository.name }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       RELEASE_NAME: 'OnePlus 13R Bright-Star Kernel With KernelSU Next, Nethunter & SUSFS v1.5.12'
-      OS_VERSION: $(grep -o 'oos[0-9]\+' <<< "${{ inputs.manifest }}")
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
           
-      - name: Download Wirless Firmware Module for Nethunter 
+      - name: Download Wireless Firmware Module for Nethunter 
         id: download_external
         env:
           SOURCE_REPO: terminal-beginner/Nethunter-Wireless-Firmware 
@@ -220,7 +220,6 @@ jobs:
         with:
           path: ./downloaded-artifacts
           
-      
       - name: Generate Device List and Final Release Notes
         id: generate-notes
         run: |
@@ -280,7 +279,7 @@ jobs:
         run: |
           gh release create "${{ env.NEW_TAG }}" \
             --repo "${{ env.REPO_OWNER }}/${{ env.REPO_NAME }}" \
-            --title "*Test-build*-${{ env.RELEASE_NAME }}-${{ env.OS_VERSION }}*Test Build*" \
+            --title "*Test-build*-${{ env.RELEASE_NAME }}" \
             --notes-file release_notes.md \
             --prerelease
        
@@ -289,12 +288,13 @@ jobs:
         run: |
           gh release create "${{ env.NEW_TAG }}" \
             --repo "${{ env.REPO_OWNER }}/${{ env.REPO_NAME }}" \
-            --title "${{ env.RELEASE_NAME }}-${{ env.OS_VERSION }}" \
+            --title "${{ env.RELEASE_NAME }}" \
             --notes-file release_notes.md
 
       - name: Upload Release Assets Dynamically
         run: |
-          for file in ./downloaded-artifacts/*/*.{zip,img}; do
+          # Upload all artifacts including .config files
+          find ./downloaded-artifacts -type f \( -name "*.zip" -o -name "*.img" -o -name "gki_defconfig_*" -o -name "msm_gki_defconfig_*" \) | while read -r file; do
             if [ -f "$file" ]; then
               echo "Uploading $file..."
               gh release upload "${{ env.NEW_TAG }}" "$file" --clobber
