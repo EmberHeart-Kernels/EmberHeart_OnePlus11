@@ -359,6 +359,41 @@ runs:
         cd ..
         echo "Modules remaining after filtering: $(find modules -type f -name '*.ko' | wc -l)"
 
+    - name: Combine Common and MSM Kernel Modules
+      shell: bash
+      run: |
+        set -euo pipefail
+        CONFIG_DIR="$GITHUB_WORKSPACE/$CONFIG"
+        KERNEL_PLATFORM="$CONFIG_DIR/kernel_platform"
+    
+        # Source directories
+        COMMON_MODULES_DIR="$CONFIG_DIR/artifacts/common_modules"
+        MSM_MODULES_DIR="$KERNEL_PLATFORM/msm-kernel/out/modules"
+        COMBINED_MODULES_DIR="$CONFIG_DIR/artifacts/combined_modules"
+    
+        mkdir -p "$COMBINED_MODULES_DIR"
+    
+        echo "Combining modules from common and msm-kernel..."
+    
+        # Copy common kernel modules
+        if [ -d "$COMMON_MODULES_DIR" ] && [ "$(find "$COMMON_MODULES_DIR" -name '*.ko' | wc -l)" -gt 0 ]; then
+           echo "Copying common kernel modules..."
+           find "$COMMON_MODULES_DIR" -name "*.ko" -exec cp {} "$COMBINED_MODULES_DIR/" \;
+         else
+         echo "Warning: No common modules found or directory doesn't exist"
+        fi
+    
+        # Copy msm-kernel modules
+        if [ -d "$MSM_MODULES_DIR" ] && [ "$(find "$MSM_MODULES_DIR" -name '*.ko' | wc -l)" -gt 0 ]; then
+         echo "Copying msm-kernel modules..."
+         find "$MSM_MODULES_DIR" -name "*.ko" -exec cp {} "$COMBINED_MODULES_DIR/" \;
+        else
+          echo "Warning: No msm-kernel modules found or directory doesn't exist"
+        fi
+    
+        echo "Total combined modules: $(find "$COMBINED_MODULES_DIR" -name "*.ko" | wc -l)"
+        ls -la "$COMBINED_MODULES_DIR/" | head -20
+        
     - name: Create Kernel Modules zip
       id: create_zip
       shell: bash
