@@ -240,6 +240,10 @@ runs:
         CONFIG_MAC80211_LEDS=m
 
         CONFIG_CAN_SLCAN=m
+
+        CONFIG_POSIX_MQUEUE=m
+        CONFIG_SYSVIPC=m
+        CONFIG_CGROUP_DEVICE=m
         EOF
 
     - name: Add memkernel module
