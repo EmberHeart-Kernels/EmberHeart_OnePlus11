@@ -300,7 +300,7 @@ runs:
         
         cd "$MSM"
 
-        # Merge defconfig fragments from vendor/kalama_GKI.config
+        # Merge defconfig fragments from vendor/pineapple_GKI.config
         cat arch/arm64/configs/vendor/pineapple_GKI.config >> ./arch/arm64/configs/gki_defconfig
 
         # Thin LTO
