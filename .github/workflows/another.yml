@@ -377,7 +377,7 @@ runs:
         CONFIG_KSU_SUSFS_SUS_SU=n
         CONFIG_TMPFS_XATTR=y
         CONFIG_TMPFS_POSIX_ACL=y
-EOF
+        EOF
 
         # Ubuntu Chroot support
         cat >> common/arch/arm64/configs/gki_defconfig << 'EOF'
@@ -397,7 +397,7 @@ EOF
         CONFIG_PROC_SYSCTL=y
         CONFIG_CGROUPS=y
         CONFIG_MEMCG=y
-EOF
+        EOF
 
         # BBR and networking
         cat >> common/arch/arm64/configs/gki_defconfig << 'EOF'
@@ -406,7 +406,7 @@ EOF
         CONFIG_TCP_CONG_BBR2=y
         CONFIG_NET_SCH_FQ=y
         CONFIG_NET_SCH_FQ_CODEL=y
-EOF
+        EOF
 
         # Nethunter and additional drivers
         cat >> common/arch/arm64/configs/gki_defconfig << 'EOF'
@@ -434,7 +434,7 @@ EOF
         CONFIG_IP_NF_TARGET_TTL=y
         CONFIG_IP6_NF_TARGET_HL=y
         CONFIG_IP6_NF_MATCH_HL=y
-EOF
+        EOF
 
         # IP SET Support
         cat >> common/arch/arm64/configs/gki_defconfig << 'EOF'
@@ -456,7 +456,7 @@ EOF
         CONFIG_IP_SET_HASH_NETPORT=y
         CONFIG_IP_SET_HASH_NETIFACE=y
         CONFIG_IP_SET_LIST_SET=y
-EOF
+        EOF
 
         # Build optimization
         cat >> common/arch/arm64/configs/gki_defconfig << 'EOF'
@@ -466,7 +466,7 @@ EOF
         CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y
         CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE_O3=n
         CONFIG_OPTIMIZE_INLINING=y
-EOF
+        EOF
 
     - name: Save Build Metadata
       id: save_metadata
@@ -621,7 +621,7 @@ EOF
         CONFIG_MT7915E=m
         CONFIG_MT7921E=m
         CONFIG_MAC80211_LEDS=m
-EOF
+        EOF
 
         # Add memkernel module
         curl -LSs "https://raw.githubusercontent.com/Poko-Apps/MemKernel/main/kernel/setup.sh" | bash -s M Bright-Star
