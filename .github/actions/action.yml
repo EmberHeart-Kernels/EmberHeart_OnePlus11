@@ -400,8 +400,7 @@ runs:
       run: |
         set -euo pipefail
         cd "$CONFIG/kernel_platform"
-        # Remove indentation to avoid leading spaces
-        cat >> common/arch/arm64/configs/gki_defconfig <<EOF
+        cat >> common/arch/arm64/configs/gki_defconfig << 'EOF'
         CONFIG_KSU=y
         CONFIG_KSU_KPROBES_HOOK=n
         CONFIG_KSU_SUSFS=y
@@ -430,8 +429,7 @@ runs:
       run: |
         set -euo pipefail
         cd "$CONFIG/kernel_platform"
-        cat >> common/arch/arm64/configs/gki_defconfig <<EOF
-        
+        cat >> common/arch/arm64/configs/gki_defconfig << 'EOF'
         # Core Namespace Support (Required for Isolation)
         CONFIG_NAMESPACES=y
         CONFIG_PID_NS=y
@@ -458,13 +456,14 @@ runs:
         # Docker Support in Chroot
         CONFIG_CGROUPS=y
         CONFIG_MEMCG=y
+        EOF
 
     - name: Add Oneplus BBR
       shell: bash
       run: |
         set -euo pipefail
         cd "$CONFIG/kernel_platform"
-        cat >> common/arch/arm64/configs/gki_defconfig <<EOF
+        cat >> common/arch/arm64/configs/gki_defconfig << 'EOF'
         CONFIG_TCP_CONG_ADVANCED=y
         CONFIG_TCP_CONG_BBR=y
         CONFIG_TCP_CONG_BBR2=y
@@ -487,7 +486,7 @@ runs:
       run: |
         set -euo pipefail
         cd "$CONFIG/kernel_platform"
-        cat >> common/arch/arm64/configs/gki_defconfig <<EOF
+        cat >> common/arch/arm64/configs/gki_defconfig << 'EOF'
         CONFIG_BT_HCIBTUSB=y
         CONFIG_BT_HCIBTUSB_BCM=y
         CONFIG_BT_HCIBTUSB_RTL=y
@@ -555,7 +554,7 @@ runs:
       run: |
         set -euo pipefail
         cd "$CONFIG/kernel_platform"
-        cat >> common/arch/arm64/configs/gki_defconfig <<EOF
+        cat >> common/arch/arm64/configs/gki_defconfig << 'EOF'
         CONFIG_IP_NF_TARGET_TTL=y
         CONFIG_IP6_NF_TARGET_HL=y
         CONFIG_IP6_NF_MATCH_HL=y
@@ -566,7 +565,7 @@ runs:
       run: |
         set -euo pipefail
         cd "$CONFIG/kernel_platform"
-        cat >> common/arch/arm64/configs/gki_defconfig <<EOF
+        cat >> common/arch/arm64/configs/gki_defconfig << 'EOF'
         CONFIG_IP_SET=y
         CONFIG_IP_SET_MAX=65534
         CONFIG_IP_SET_BITMAP_IP=y
@@ -592,7 +591,7 @@ runs:
       run: |
         set -euo pipefail
         cd "$CONFIG/kernel_platform"
-        cat >> common/arch/arm64/configs/gki_defconfig <<EOF
+        cat >> common/arch/arm64/configs/gki_defconfig << 'EOF'
         # CONFIG_LTO_CLANG_THIN is not set
         # CONFIG_LTO_CLANG is not set
         CONFIG_LTO_NONE=y
@@ -768,23 +767,7 @@ runs:
         echo "warnings=$WARNINGS" >> "$GITHUB_OUTPUT"
         echo "image_sha256=${IMAGE_SHA256:-}" >> "$GITHUB_OUTPUT"
 
-    - name: Save Kernel Config
-      shell: bash
-      run: |
-        set -euo pipefail
-        CONFIG_DIR="$GITHUB_WORKSPACE/$CONFIG"
-        ARTIFACTS_DIR="$CONFIG_DIR/artifacts"
-        KERNEL_CONFIG_PATH="$CONFIG_DIR/kernel_platform/common/out/.config"
-        
-        if [ -f "$KERNEL_CONFIG_PATH" ]; then
-          CONFIG_FILENAME="gki_defconfig_${{ env.KERNEL_FULL_VER }}"
-          cp "$KERNEL_CONFIG_PATH" "$ARTIFACTS_DIR/$CONFIG_FILENAME"
-          echo "✅ Kernel config saved: $CONFIG_FILENAME"
-        else
-          echo "⚠️ WARNING: Kernel config not found at $KERNEL_CONFIG_PATH"
-          exit 1
-        fi
-
+    # FIRST create ZIP (without deleting config)
     - name: Create Kernel ZIP
       id: create_zip
       shell: bash
@@ -809,12 +792,27 @@ runs:
 
         echo "Creating flashable zip: $ZIP_NAME"
         ( cd "$GITHUB_WORKSPACE/AnyKernel3" && zip -r "$ARTIFACTS_DIR/$ZIP_NAME" ./* >/dev/null )
-
-        # Keep only the flashable zip and the model metadata file (assumed already created earlier)
-        find "$ARTIFACTS_DIR" -maxdepth 1 -type f ! -name "$ZIP_NAME" ! -name "${OP_MODEL}.txt" -delete
     
         # Output for later steps (optional)
         echo "zip_name=$ZIP_NAME" >> "$GITHUB_OUTPUT"
+
+    # THEN save kernel config (after ZIP creation)
+    - name: Save Kernel Config
+      shell: bash
+      run: |
+        set -euo pipefail
+        CONFIG_DIR="$GITHUB_WORKSPACE/$CONFIG"
+        ARTIFACTS_DIR="$CONFIG_DIR/artifacts"
+        KERNEL_CONFIG_PATH="$CONFIG_DIR/kernel_platform/common/out/.config"
+        
+        if [ -f "$KERNEL_CONFIG_PATH" ]; then
+          CONFIG_FILENAME="gki_defconfig_${{ env.KERNEL_FULL_VER }}"
+          cp "$KERNEL_CONFIG_PATH" "$ARTIFACTS_DIR/$CONFIG_FILENAME"
+          echo "✅ Kernel config saved: $CONFIG_FILENAME"
+        else
+          echo "⚠️ WARNING: Kernel config not found at $KERNEL_CONFIG_PATH"
+          exit 1
+        fi
         
     - name: Upload Boot Image
       if: success() && steps.create_zip.conclusion == 'success'
@@ -899,4 +897,3 @@ runs:
       with:
         name: kernel-${{ env.CONFIG }}
         path: ${{ env.CONFIG }}/artifacts/
-        
