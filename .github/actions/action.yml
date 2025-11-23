@@ -442,6 +442,7 @@ runs:
         CONFIG_PROC_FS=y
         CONFIG_SYSFS=y
         CONFIG_SYSVIPC=y
+        CONFIG_SECURITY_SELINUX_IPC_HOOKS=y
         EOF
 
     - name: Add Oneplus BBR
