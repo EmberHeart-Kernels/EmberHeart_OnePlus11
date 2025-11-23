@@ -461,12 +461,23 @@ runs:
       run: |
         set -euo pipefail
         cd "$CONFIG/kernel_platform/common"
+    
+        # Handle clear_page patch with proper version check
+        if [ -f "../../../my_patches/kernel_patches/op11/common/clear_page_16bytes_align.patch" ]; then
+          if [ "$(printf '%s\n' "$KERNEL_VER" "5.16" | sort -V | head -n1)" = "$KERNEL_VER" ]; then
+            patch -p1 --forward "../../../my_patches/kernel_patches/op11/common/clear_page_16bytes_align.patch"
+          else
+            cat "../../../my_patches/kernel_patches/op11/common/clear_page_16bytes_align.patch" | sed -e 's/SYM_FUNC_START_PI(clear_page)/SYM_FUNC_START_PI(__pi_clear_page)/' | patch -p1 -F3 --forward
+          fi
+        fi
+    
+        # Apply remaining patches
         for patch_file in ../../../my_patches/kernel_patches/op11/common/*.patch; do
-        cat "../../../my_patches/kernel_patches/op11/common/clear_page_16bytes_align.patch" | sed -e 's/SYM_FUNC_START_PI(clear_page)/SYM_FUNC_START_PI(__pi_clear_page)/' | patch -p1 -F3 --forward
-            echo "Applying patch: $patch_file"
-            patch -p1 < "$patch_file"
+          [[ "$patch_file" == *"clear_page"* ]] && continue  # Skip already handled
+          echo "Applying patch: $patch_file"
+          patch -p1 < "$patch_file"
         done
-
+        
     - name: Add Nethunter inline configs
       shell: bash
       run: |
