@@ -456,15 +456,15 @@ runs:
         CONFIG_NET_SCH_FQ_CODEL=y
         EOF
 
-    #- name: Add my kernel patches to common kernel
-      #shell: bash
-      #run: |
-        #set -euo pipefail
-        #cd "$CONFIG/kernel_platform/common"
-        #for patch_file in ../../../my_patches/kernel_patches/op11/common/*.patch; do
-            #echo "Applying patch: $patch_file"
-            #patch -p1 < "$patch_file"
-        #done
+    - name: Add my kernel patches to common kernel
+      shell: bash
+      run: |
+        set -euo pipefail
+        cd "$CONFIG/kernel_platform/common"
+        for patch_file in ../../../my_patches/kernel_patches/op11/common/*.patch; do
+            echo "Applying patch: $patch_file"
+            patch -p1 < "$patch_file"
+        done
 
     - name: Add Nethunter inline configs
       shell: bash
