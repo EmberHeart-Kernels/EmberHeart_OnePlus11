@@ -461,23 +461,40 @@ runs:
       run: |
         set -euo pipefail
         cd "$CONFIG/kernel_platform/common"
-    
-        # Handle clear_page patch with proper version check
-        if [ -f "../../../my_patches/kernel_patches/op11/common/clear_page_16bytes_align.patch" ]; then
-          if [ "$(printf '%s\n' "$KERNEL_VER" "5.16" | sort -V | head -n1)" = "$KERNEL_VER" ]; then
-            patch -p1 --forward "../../../my_patches/kernel_patches/op11/common/clear_page_16bytes_align.patch"
+        apply_patch() {
+          local patch_file="$1"
+          local patch_name=$(basename "$patch_file")
+      
+          echo "Applying: $patch_name"
+          if patch -p1 --forward --silent < "$patch_file"; then
+            echo "✅ Success: $patch_name"
+            return 0
           else
-            cat "../../../my_patches/kernel_patches/op11/common/clear_page_16bytes_align.patch" | sed -e 's/SYM_FUNC_START_PI(clear_page)/SYM_FUNC_START_PI(__pi_clear_page)/' | patch -p1 -F3 --forward
-          fi
-        fi
+            local exit_code=$?
+            if [ $exit_code -eq 1 ]; then
+              echo "⚠️ Skipped (already applied): $patch_name"
+              return 0
+             else
+               echo "❌ Error: $patch_name failed with code $exit_code"
+               return 1
+            fi
+         fi
+       }
     
-        # Apply remaining patches
-        for patch_file in ../../../my_patches/kernel_patches/op11/common/*.patch; do
-          [[ "$patch_file" == *"clear_page"* ]] && continue  # Skip already handled
-          echo "Applying patch: $patch_file"
-          patch -p1 < "$patch_file"
-        done
-        
+       for patch_file in ../../../my_patches/kernel_patches/op11/common/*.patch; do
+         [ -e "$patch_file" ] || continue
+      
+         if [[ "$patch_file" == *"clear_page"* ]]; then
+           echo "Processing clear_page with sed transformation..."
+           sed 's/SYM_FUNC_START_PI(clear_page)/SYM_FUNC_START_PI(__pi_clear_page)/' "$patch_file" | \
+             patch -p1 --forward --silent -F3
+         else
+           apply_patch "$patch_file"
+         fi
+       done
+    
+       echo "🎉 All patches processed!"
+
     - name: Add Nethunter inline configs
       shell: bash
       run: |
