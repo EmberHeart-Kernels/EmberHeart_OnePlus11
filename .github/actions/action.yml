@@ -462,6 +462,7 @@ runs:
         set -euo pipefail
         cd "$CONFIG/kernel_platform/common"
         for patch_file in ../../../my_patches/kernel_patches/op11/common/*.patch; do
+        cat "../../../my_patches/kernel_patches/op11/common/clear_page_16bytes_align.patch" | sed -e 's/SYM_FUNC_START_PI(clear_page)/SYM_FUNC_START_PI(__pi_clear_page)/' | patch -p1 -F3 --forward
             echo "Applying patch: $patch_file"
             patch -p1 < "$patch_file"
         done
