@@ -441,7 +441,7 @@ runs:
         CONFIG_DEVTMPFS=y
         CONFIG_PROC_FS=y
         CONFIG_SYSFS=y
-        CONFIG_POSIX_MQUEUE=y
+        # CONFIG_POSIX_MQUEUE is not set
         EOF
 
     - name: Add Oneplus BBR
@@ -456,6 +456,36 @@ runs:
         CONFIG_NET_SCH_FQ=y
         CONFIG_NET_SCH_FQ_CODEL=y
         EOF
+
+    - name: Upgrade to BBR v3
+      shell: bash
+      run: |
+        set -euo pipefail
+        cd "$CONFIG/kernel_platform"
+        
+        echo "🔄 Cloning BBR v3 repository..."
+        git clone -b v3 --depth=1 https://github.com/google/bbr.git /tmp/bbr-v3
+        
+        echo "⬆️  Upgrading to BBR v3..."
+        cd common
+        
+        # Backup original
+        cp net/ipv4/tcp_bbr.c net/ipv4/tcp_bbr.c.bak || true
+        
+        # Replace with BBR v3
+        cp /tmp/bbr-v3/net/ipv4/tcp_bbr.c net/ipv4/tcp_bbr.c
+        
+        # Clean up
+        rm -rf /tmp/bbr-v3
+        
+        echo "✅ BBR v3 source code updated successfully!"
+        
+        # Update config (remove BBR2, keep only BBR v3)
+        cd "$CONFIG/kernel_platform"
+        sed -i '/CONFIG_TCP_CONG_BBR2[=_]/d' common/arch/arm64/configs/gki_defconfig
+        
+        echo "🔧 BBR v3 configuration applied!"
+
 
     - name: Add my kernel patches to common kernel
       shell: bash
