@@ -457,7 +457,7 @@ runs:
         CONFIG_NET_SCH_FQ_CODEL=y
         EOF
 
-    - name: Upgrade to BBR v3
+    - name: Upgrade to BBR v3 (Kernel 6.1 Compatible)
       shell: bash
       run: |
         set -euo pipefail
@@ -465,25 +465,51 @@ runs:
         echo "🔄 Cloning BBR v3 repository..."
         git clone -b v3 --depth=1 https://github.com/google/bbr.git /tmp/bbr-v3
         
-        echo "⬆️  Upgrading to BBR v3..."
+        echo "⬆️  Upgrading to BBR v3 (applying 6.1 compatibility fixes)..."
+        
+        # Backup original file
+        cp "$GITHUB_WORKSPACE/$CONFIG/kernel_platform/common/net/ipv4/tcp_bbr.c" \
+           "$GITHUB_WORKSPACE/$CONFIG/kernel_platform/common/net/ipv4/tcp_bbr.c.bak" || true
+        
+        # Copy BBR v3 source
+        cp /tmp/bbr-v3/net/ipv4/tcp_bbr.c \
+           "$GITHUB_WORKSPACE/$CONFIG/kernel_platform/common/net/ipv4/tcp_bbr.c"
+        
+        # ========== 6.1 COMPATIBILITY FIXES ==========
         cd "$GITHUB_WORKSPACE/$CONFIG/kernel_platform/common"
         
-        # Backup original
-        cp net/ipv4/tcp_bbr.c net/ipv4/tcp_bbr.c.bak || true
+        # 1. Remove PLB structure (not in 6.1)
+        sed -i '/struct tcp_plb_state plb;/d' net/ipv4/tcp_bbr.c
         
-        # Replace with BBR v3
-        cp /tmp/bbr-v3/net/ipv4/tcp_bbr.c net/ipv4/tcp_bbr.c
+        # 2. Replace TCP_ECN_LOW with basic ECN check
+        sed -i 's/tcp_sk(sk)->ecn_flags & TCP_ECN_LOW/tcp_sk(sk)->ecn_flags \& TCP_ECN_CE/g' net/ipv4/tcp_bbr.c
+        
+        # 3. Remove BPF kfunc support (6.6+ feature)
+        sed -i '/__bpf_kfunc/d' net/ipv4/tcp_bbr.c
+        sed -i '/BTF_KFUNCS_START/d' net/ipv4/tcp_bbr.c
+        sed -i '/BTF_KFUNCS_END/d' net/ipv4/tcp_bbr.c
+        sed -i '/static const struct btf_kfunc_id_set tcp_bbr_kfunc_set/d' net/ipv4/tcp_bbr.c
+        sed -i '/register_btf_kfunc_id_set/d' net/ipv4/tcp_bbr.c
+        
+        # 4. Remove the kfunc set from struct_ops registration
+        sed -i '/\.owner = THIS_MODULE,/d' net/ipv4/tcp_bbr.c
+        sed -i '/ret = register_btf_kfunc_id_set/d' net/ipv4/tcp_bbr.c
         
         # Clean up
         rm -rf /tmp/bbr-v3
         
-        echo "✅ BBR v3 source code updated successfully!"
+        echo "✅ BBR v3 source code updated with 6.1 compatibility fixes!"
         
-        # Go back to kernel_platform root for config update
+        # ========== CONFIG UPDATE ==========
         cd "$GITHUB_WORKSPACE/$CONFIG/kernel_platform"
         
-        # Update config (remove BBR2, keep only BBR v3)
+        # Remove old BBR configs
         sed -i '/CONFIG_TCP_CONG_BBR2[=_]/d' common/arch/arm64/configs/gki_defconfig
+        sed -i '/CONFIG_TCP_CONG_BBR[=_]/d' common/arch/arm64/configs/gki_defconfig
+        
+        # Add BBR v3 config
+        echo "CONFIG_TCP_CONG_ADVANCED=y" >> common/arch/arm64/configs/gki_defconfig
+        echo "CONFIG_TCP_CONG_BBR=m" >> common/arch/arm64/configs/gki_defconfig
         
         echo "🔧 BBR v3 configuration applied!"
 
