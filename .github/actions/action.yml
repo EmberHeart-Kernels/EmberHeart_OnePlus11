@@ -461,13 +461,12 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        cd "$CONFIG/kernel_platform"
         
         echo "🔄 Cloning BBR v3 repository..."
         git clone -b v3 --depth=1 https://github.com/google/bbr.git /tmp/bbr-v3
         
         echo "⬆️  Upgrading to BBR v3..."
-        cd common
+        cd "$GITHUB_WORKSPACE/$CONFIG/kernel_platform/common"
         
         # Backup original
         cp net/ipv4/tcp_bbr.c net/ipv4/tcp_bbr.c.bak || true
@@ -480,8 +479,10 @@ runs:
         
         echo "✅ BBR v3 source code updated successfully!"
         
+        # Go back to kernel_platform root for config update
+        cd "$GITHUB_WORKSPACE/$CONFIG/kernel_platform"
+        
         # Update config (remove BBR2, keep only BBR v3)
-        cd "$CONFIG/kernel_platform"
         sed -i '/CONFIG_TCP_CONG_BBR2[=_]/d' common/arch/arm64/configs/gki_defconfig
         
         echo "🔧 BBR v3 configuration applied!"
