@@ -442,6 +442,15 @@ runs:
         CONFIG_PROC_FS=y
         CONFIG_SYSFS=y
         CONFIG_POSIX_MQUEUE=y
+        # test
+        CONFIG_FW_LOADER_COMPRESS=y
+        CONFIG_CGROUP_PIDS=y
+        CONFIG_MEMCG_SWAP=y
+        CONFIG_LEGACY_PTYS=y
+        CONFIG_LEGACY_PTY_COUNT=y
+        CONFIG_DEVTMPFS_MOUNT=y
+        CONFIG_DEVPTS_FS=y
+        CONFIG_MNT_NS=y
         EOF
 
     - name: Add Oneplus BBR
