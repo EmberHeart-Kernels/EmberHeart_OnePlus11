@@ -450,6 +450,7 @@ runs:
         CONFIG_LEGACY_PTY_COUNT=y
         CONFIG_DEVPTS_FS=y
         CONFIG_MNT_NS=y
+        CONFIG_CGROUP_DEVICE=m
         EOF
 
     - name: Add Oneplus BBR
