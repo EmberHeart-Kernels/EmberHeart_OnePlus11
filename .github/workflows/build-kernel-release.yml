@@ -23,6 +23,7 @@ on:
         options:
           - OOS14
           - OOS15
+          - OOS16
           - FAST_BUILD_OOS15
         default: OOS15
       ksun_branch:
