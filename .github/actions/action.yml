@@ -455,6 +455,7 @@ runs:
         CONFIG_TCP_CONG_BBR2=y
         CONFIG_NET_SCH_FQ=y
         CONFIG_NET_SCH_FQ_CODEL=y
+        CONFIG_HZ_300=y
         EOF
 
     - name: Add my kernel patches to common kernel
