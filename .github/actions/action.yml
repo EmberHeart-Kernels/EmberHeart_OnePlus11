@@ -442,8 +442,6 @@ runs:
         CONFIG_PROC_FS=y
         CONFIG_SYSFS=y
         CONFIG_POSIX_MQUEUE=y
-        # test
-        CONFIG_CGROUP_DEVICE=y
         EOF
 
     - name: Add Oneplus BBR
